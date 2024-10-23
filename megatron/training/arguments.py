@@ -630,6 +630,11 @@ def validate_args(args, defaults={}):
             args.no_load_rng = True
             print('Warning: disabling --no-load-rng for upcycling.')
 
+    if args.log_kurtosis:
+        assert args.tensor_model_parallel_size == 1, "Log kurtosis only implemented when TP=1"
+        assert args.pipeline_model_parallel_size == 1, "Log kurtosis only implemented when PP=1"
+        assert args.context_parallel_size == 1, "Log kurtosis only implemented when CP=1"
+
     # Print arguments.
     _print_args("arguments", args)
 
@@ -720,6 +725,7 @@ def _add_transformer_engine_args(parser):
                        choices=['most_recent', 'max'],
                        help='Algorithm for computing amax from history',
                        dest='fp8_amax_compute_algo')
+    group.add_argument("--fp8-dot-product-attention", action="store_true")
     group.add_argument('--no-fp8-wgrad', action='store_false',
                        help='Execute wgrad in higher precision even for FP8 runs',
                        dest='fp8_wgrad')
@@ -1008,6 +1014,7 @@ def _add_logging_args(parser):
     group.add_argument('--log-world-size-to-tensorboard',
                        action='store_true',
                        help='Enable world size logging to tensorboard.')
+    group.add_argument('--log-kurtosis', action='store_true')
     group.add_argument('--wandb-project', type=str, default='',
                        help='The wandb project name. Ignore wandb by default.')
     group.add_argument('--wandb-exp-name', type=str, default='',

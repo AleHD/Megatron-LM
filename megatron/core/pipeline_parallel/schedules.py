@@ -270,16 +270,16 @@ def forward_step(
         context_manager = contextlib.nullcontext()
     with context_manager:
         if checkpoint_activations_microbatch is None:
-            output_tensor, loss_func = forward_step_func(data_iterator, model)
+            output_dict, loss_func = forward_step_func(data_iterator, model)
         else:
-            output_tensor, loss_func = forward_step_func(
+            output_dict, loss_func = forward_step_func(
                 data_iterator, model, checkpoint_activations_microbatch
             )
 
     num_tokens = torch.tensor(0, dtype=torch.int)
     if parallel_state.is_pipeline_last_stage():
         if not collect_non_loss_data:
-            outputs = loss_func(output_tensor)
+            outputs = loss_func(output_dict)
             if len(outputs) == 3:
                 output_tensor, num_tokens, loss_reduced = outputs
                 if not config.calculate_per_token_loss:

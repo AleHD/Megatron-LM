@@ -53,6 +53,7 @@ class GPTModel(LanguageModule):
         seq_len_interpolation_factor (Optional[float], optional):
             scale of linearly interpolating RoPE for longer sequences.
             The value must be a float larger than 1.0. Defaults to None.
+        log_kurtosis (float): Log average kurtosis
     """
 
     def __init__(
@@ -71,12 +72,14 @@ class GPTModel(LanguageModule):
         rotary_base: int = 10000,
         rope_scaling: bool = False,
         seq_len_interpolation_factor: Optional[float] = None,
+        log_kurtosis: bool = False
     ) -> None:
         super().__init__(config=config)
 
         if has_config_logger_enabled(config):
             log_config_to_disk(config, locals(), prefix=type(self).__name__)
 
+        self.log_kurtosis = log_kurtosis
         self.transformer_layer_spec: ModuleSpec = transformer_layer_spec
         self.vocab_size = vocab_size
         self.max_sequence_length = max_sequence_length
@@ -223,14 +226,21 @@ class GPTModel(LanguageModule):
             rotary_pos_emb = self.rotary_pos_emb(rotary_seq_len)
 
         # Run decoder.
-        hidden_states = self.decoder(
+        hidden_states_or_logdict = self.decoder(
             hidden_states=decoder_input,
             attention_mask=attention_mask,
             inference_params=inference_params,
             rotary_pos_emb=rotary_pos_emb,
             packed_seq_params=packed_seq_params,
+            log_kurtosis=self.log_kurtosis,
             **(extra_block_kwargs or {}),
         )
+        if self.log_kurtosis:
+            hidden_states = hidden_states_or_logdict["hidden_states"]
+            avg_kurtosis = hidden_states_or_logdict["kurtosis"]
+        else:
+            hidden_states = hidden_states_or_logdict
+            avg_kurtosis = None
 
         if not self.post_process:
             return hidden_states
@@ -260,6 +270,10 @@ class GPTModel(LanguageModule):
             return logits.transpose(0, 1).contiguous()
 
         loss = self.compute_language_model_loss(labels, logits)
+
+        # Kurtosis calculation.
+        if avg_kurtosis is not None:
+            return {"loss": loss, "kurtosis": avg_kurtosis}
 
         return loss
 

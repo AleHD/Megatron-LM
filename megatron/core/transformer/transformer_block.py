@@ -397,6 +397,7 @@ class TransformerBlock(MegatronModule):
         rotary_pos_emb: Tensor = None,
         inference_params: InferenceParams = None,
         packed_seq_params: PackedSeqParams = None,
+        log_kurtosis: bool = False,
     ):
         """
         Perform the forward pass through the transformer block.
@@ -442,6 +443,7 @@ class TransformerBlock(MegatronModule):
         #   already creates viewless tensors. That said, make_viewless_tensor()
         #   is called here to be future-proof and corner-case-proof.
         hidden_states = make_viewless_tensor(inp=hidden_states, requires_grad=True, keep_graph=True)
+        avg_kurtosis = torch.tensor(0.0, dtype=torch.float, device=hidden_states.device) if log_kurtosis else None
 
         if self.config.sequence_parallel:
             rng_context = tensor_parallel.get_cuda_rng_tracker().fork()
@@ -529,6 +531,12 @@ class TransformerBlock(MegatronModule):
                     ):
                         hidden_states = self.group_prefetch_offload_commit_async(hidden_states)
 
+                    if avg_kurtosis is not None:
+                        with torch.no_grad():
+                            act_rms = (hidden_states**2).mean().sqrt()
+                            normed_acts = hidden_states/(act_rms + 1e-8)
+                            avg_kurtosis += (normed_acts.view(-1, normed_acts.shape[-1])**2).mean(0).var() / len(self.layers)
+
         # Final layer norm.
         if self.final_layernorm is not None:
             hidden_states = self.final_layernorm(hidden_states)
@@ -539,7 +547,9 @@ class TransformerBlock(MegatronModule):
                 inp=hidden_states, requires_grad=True, keep_graph=True
             )
 
-        return hidden_states
+        if avg_kurtosis is None:
+            return hidden_states
+        return {"kurtosis": avg_kurtosis, "hidden_states": hidden_states}
 
     def sharded_state_dict(
         self, prefix: str = '', sharded_offsets: tuple = (), metadata: dict = None

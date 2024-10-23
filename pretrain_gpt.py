@@ -106,7 +106,8 @@ def model_provider(pre_process=True, post_process=True) -> Union[GPTModel, megat
                 position_embedding_type=args.position_embedding_type,
                 rotary_percent=args.rotary_percent,
                 rotary_base=args.rotary_base,
-                rope_scaling=args.use_rope_scaling
+                rope_scaling=args.use_rope_scaling,
+                log_kurtosis=args.log_kurtosis
             )
 
     return model
@@ -128,7 +129,7 @@ def get_batch(data_iterator):
     return batch.values()
 
 
-def loss_func(loss_mask: torch.Tensor, output_tensor: torch.Tensor):
+def loss_func(loss_mask: torch.Tensor, output_tensor: torch.Tensor | dict[str, torch.Tensor]):
     """Loss function.
 
     Args:
@@ -143,7 +144,13 @@ def loss_func(loss_mask: torch.Tensor, output_tensor: torch.Tensor):
     """
     args = get_args()
 
-    losses = output_tensor.float()
+    if isinstance(output_tensor, dict):
+        losses = output_tensor["loss"].float()
+        metrics = output_tensor
+        del metrics["loss"]
+    else:
+        metrics = {}
+        losses = output_tensor.float()
     loss_mask = loss_mask.view(-1).float()
     total_tokens = loss_mask.sum()
     loss = torch.cat([torch.sum(losses.view(-1) * loss_mask).view(1), total_tokens.view(1)])
@@ -163,11 +170,17 @@ def loss_func(loss_mask: torch.Tensor, output_tensor: torch.Tensor):
     reporting_loss = loss.clone().detach()
     torch.distributed.all_reduce(reporting_loss, group=mpu.get_data_parallel_group())
 
+    # Reduce other metrics.
+    reduced_metrics = {}
+    for key, value in metrics.items():
+        assert value.size() == ()
+        torch.distributed.all_reduce(value, group=mpu.get_data_parallel_group())
+        reduced_metrics[key] = value
     local_num_tokens = loss[1].clone().detach().to(torch.int)
     return (
         loss[0] * args.context_parallel_size,
         local_num_tokens,
-        {'lm loss': (reporting_loss[0], reporting_loss[1])},
+        {'lm loss': (reporting_loss[0], reporting_loss[1]), **reduced_metrics},
     )
 
 
@@ -190,10 +203,10 @@ def forward_step(data_iterator, model: GPTModel):
     timers('batch-generator').stop()
 
     with stimer:
-        output_tensor = model(tokens, position_ids, attention_mask,
-                              labels=labels)
+        output_dict = model(tokens, position_ids, attention_mask,
+                            labels=labels)
 
-    return output_tensor, partial(loss_func, loss_mask)
+    return output_dict, partial(loss_func, loss_mask)
 
 
 def is_dataset_built_on_rank():

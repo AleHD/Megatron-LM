@@ -174,7 +174,7 @@ def loss_func(loss_mask: torch.Tensor, output_tensor: torch.Tensor | dict[str, t
     reduced_metrics = {}
     for key, value in metrics.items():
         assert value.size() == ()
-        torch.distributed.all_reduce(value, group=mpu.get_data_parallel_group())
+        torch.distributed.all_reduce(value, group=mpu.get_data_parallel_group(), op=torch.distributed.ReduceOp.AVG)
         reduced_metrics[key] = value
     local_num_tokens = loss[1].clone().detach().to(torch.int)
     return (

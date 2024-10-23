@@ -2,8 +2,8 @@
   rules:
     - if: $CI_PIPELINE_SOURCE == 'merge_request_event' && $CI_MERGE_REQUEST_TARGET_BRANCH_PROTECTED != "true"
       allow_failure: true
-      when: always
-    - when: always
+      when: on_success
+    - when: on_success
   stage: test
 
 include:
@@ -90,7 +90,6 @@ test:build_image:
     - test:docs_build
     - test:formatting
     - test:copyright
-    - test:secret_detection
   timeout: 180m
   tags: [8xL40S]
   variables:
@@ -125,8 +124,9 @@ test:build_image:
   rules:
     - if: $CI_PIPELINE_SOURCE == 'merge_request_event' && $CI_MERGE_REQUEST_TARGET_BRANCH_PROTECTED != "true"
       allow_failure: true
-      when: always
-    - when: always
+      when: on_success
+    - when: on_success
+
 
 test:pyt(LTS)_mcore(latest):
   extends: [.unit_tests]
@@ -209,15 +209,22 @@ test:copyright:
     - git fetch origin main
     - bash tools/copyright.sh
 
+# Override from template
+secret_detection:
+  rules:
+    - when: never
+
+# Inherit and modify template
 test:secret_detection:
   tags: [mcore-docker-node-small]
-  extends: ".secret-analyzer"
+  extends: [".secret-analyzer"]
   variables:
     GIT_DEPTH: 0
     SECRET_DETECTION_LOG_OPTIONS: ${CI_MERGE_REQUEST_DIFF_BASE_SHA}..${CI_COMMIT_SHA}
   allow_failure: true
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - when: never
   script:
     - apk add jq
     - /analyzer run

@@ -71,7 +71,7 @@ class OptimizerParamScheduler:
         self.wsd_decay_steps = wsd_decay_steps
         self.lr_wsd_decay_style = lr_wsd_decay_style
         assert self.lr_decay_steps > 0
-        assert self.lr_warmup_steps < self.lr_decay_steps
+        assert self.lr_warmup_steps < self.lr_decay_steps, f"{self.lr_warmup_steps} < {self.lr_decay_steps}"
 
         self.lr_decay_style = lr_decay_style
         if self.lr_decay_style == "WSD":

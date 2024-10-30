@@ -28,6 +28,7 @@ class TransformerLayerSubmodules:
 
     Args:
         input_layernorm (Union[ModuleSpec, type]): Specification for the input layer normalization.
+        input_residual_downscaling (Union[ModuleSpec, type]): Specification for the input residual downscaling.
         self_attention (Union[ModuleSpec, type]): Specification for the self-attention mechanism.
         self_attn_bda (Union[ModuleSpec, type]): Specification for the bias-dropout-add operation
             after self-attention.
@@ -38,6 +39,7 @@ class TransformerLayerSubmodules:
             after cross-attention.
         pre_mlp_layernorm (Union[ModuleSpec, type]): Specification for the layer normalization
             before the MLP.
+        attention_residual_downscaling (Union[ModuleSpec, type]): Specification for the attention residual downscaling.
         mlp (Union[ModuleSpec, type]): Specification for the MLP.
         mlp_bda (Union[ModuleSpec, type]): Specification for the bias-dropout-add operation
             after the MLP.
@@ -46,12 +48,14 @@ class TransformerLayerSubmodules:
     """
 
     input_layernorm: Union[ModuleSpec, type] = IdentityOp
+    input_residual_downscaling: Union[ModuleSpec, type]  = IdentityOp
     self_attention: Union[ModuleSpec, type] = IdentityOp
     self_attn_bda: Union[ModuleSpec, type] = IdentityFuncOp
 
     pre_cross_attn_layernorm: Union[ModuleSpec, type] = IdentityOp
     cross_attention: Union[ModuleSpec, type] = IdentityOp
     cross_attn_bda: Union[ModuleSpec, type] = IdentityFuncOp
+    attention_residual_downscaling: Union[ModuleSpec, type] = IdentityOp
 
     pre_mlp_layernorm: Union[ModuleSpec, type] = IdentityOp
     mlp: Union[ModuleSpec, type] = IdentityOp
@@ -112,6 +116,13 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
             eps=self.config.layernorm_epsilon,
         )
 
+        # [Module 1.1: Input residual downscaling]
+        self.input_residual_downscaling = build_module(
+            submodules.input_residual_downscaling,
+            hidden_size=self.config.hidden_size,
+            initial_value=self.config.downscale_residual,
+        )
+
         attention_optional_kwargs = {}
         if config.cp_comm_type is not None:
             if isinstance(config.cp_comm_type, list):
@@ -125,6 +136,13 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
             config=self.config,
             layer_number=layer_number,
             **attention_optional_kwargs,
+        )
+
+        # [Module 2.1: Attention residual downscaling]
+        self.attention_residual_downscaling = build_module(
+            submodules.attention_residual_downscaling,
+            hidden_size=self.config.hidden_size,
+            initial_value=self.config.downscale_residual,
         )
 
         # [Module 3: BiasDropoutFusion]
@@ -291,13 +309,18 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
         input_layernorm_output = self.input_layernorm(hidden_states)
 
         # Self attention.
-        attention_output_with_bias = self.self_attention(
+        attention_output, bias = self.self_attention(
             input_layernorm_output,
             attention_mask=attention_mask,
             inference_params=inference_params,
             rotary_pos_emb=rotary_pos_emb,
             packed_seq_params=packed_seq_params,
         )
+        attention_output = self.input_residual_downscaling(attention_output)
+        #attention_output = 0.1*attention_output
+        if bias is not None:
+            bias = self.input_residual_downscaling(bias)
+        attention_output_with_bias = (attention_output, bias)
 
         # TODO: could we move `bias_dropout_add_exec_handler` itself
         # inside the module provided in the `bias_dropout_add_spec` module?
@@ -337,7 +360,12 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
         pre_mlp_layernorm_output = self.pre_mlp_layernorm(hidden_states)
 
         # MLP.
-        mlp_output_with_bias = self.mlp(pre_mlp_layernorm_output)
+        mlp_output, bias = self.mlp(pre_mlp_layernorm_output)
+        mlp_output = self.attention_residual_downscaling(mlp_output)
+        #mlp_output = 0.1*mlp_output
+        if bias is not None:
+            bias = self.attention_residual_downscaling(bias)
+        mlp_output_with_bias = (mlp_output, bias)
 
         # TODO: could we move `bias_dropout_add_exec_handler` itself
         # inside the module provided in the `bias_dropout_add_spec` module?

@@ -339,6 +339,8 @@ class TransformerConfig(ModelParallelConfig):
     config_logger_dir: str = ""
     """When non-empty, dumps entry-point configs to config_logger_dir"""
 
+    downscale_residual: Optional[float] = None
+
     def __post_init__(self):
         """Python dataclass method that is used to modify attributes after initialization.
         See https://docs.python.org/3/library/dataclasses.html#post-init-processing for more

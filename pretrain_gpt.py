@@ -73,7 +73,7 @@ def model_provider(pre_process=True, post_process=True) -> Union[GPTModel, megat
             transformer_layer_spec = import_module(args.spec)
         else:
             if use_te:
-                transformer_layer_spec = get_gpt_layer_with_transformer_engine_spec(args.num_experts, args.moe_grouped_gemm, args.qk_layernorm, args.multi_latent_attention, args.fp8)
+                transformer_layer_spec = get_gpt_layer_with_transformer_engine_spec(args.num_experts, args.moe_grouped_gemm, args.qk_layernorm, args.multi_latent_attention, args.fp8, args.downscale_residual, args.attn_layernorm, args.mlp_layernorm)
             else:
                 transformer_layer_spec = get_gpt_layer_local_spec(args.num_experts, args.moe_grouped_gemm, args.qk_layernorm, args.multi_latent_attention)
 
@@ -107,9 +107,12 @@ def model_provider(pre_process=True, post_process=True) -> Union[GPTModel, megat
                 rotary_percent=args.rotary_percent,
                 rotary_base=args.rotary_base,
                 rope_scaling=args.use_rope_scaling,
-                log_kurtosis=args.log_kurtosis
+                log_kurtosis=args.log_kurtosis,
+                final_layernorm=args.final_layernorm,
             )
 
+    print("Built model:")
+    print(model)
     return model
 
 
@@ -266,6 +269,11 @@ def train_valid_test_datasets_provider(train_val_test_num_samples):
     ).build()
 
     print_rank_0("> finished creating GPT datasets ...")
+
+    if is_dataset_built_on_rank():
+        n_tokens_per_epoch = train_ds._get_num_tokens_per_epoch()
+        print_rank_0(f"Total number of tokens available in train dataset: {n_tokens_per_epoch}")
+        print_rank_0(f"Total number of epochs to train for: {train_ds._get_num_epochs(n_tokens_per_epoch)}")
 
     return train_ds, valid_ds, test_ds
 

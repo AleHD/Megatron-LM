@@ -54,6 +54,8 @@ class GPTModel(LanguageModule):
             scale of linearly interpolating RoPE for longer sequences.
             The value must be a float larger than 1.0. Defaults to None.
         log_kurtosis (float): Log average kurtosis
+        input_embeddings_multiplier (Optional[float]):
+            Multiply input_embeddings by this value
     """
 
     def __init__(
@@ -72,7 +74,9 @@ class GPTModel(LanguageModule):
         rotary_base: int = 10000,
         rope_scaling: bool = False,
         seq_len_interpolation_factor: Optional[float] = None,
-        log_kurtosis: bool = False
+        log_kurtosis: bool = False,
+        input_embeddings_multiplier: float = 1.0,
+        final_layernorm: bool = True,
     ) -> None:
         super().__init__(config=config)
 
@@ -89,6 +93,8 @@ class GPTModel(LanguageModule):
         self.parallel_output = parallel_output
         self.share_embeddings_and_output_weights = share_embeddings_and_output_weights
         self.position_embedding_type = position_embedding_type
+        self.input_embeddings_multiplier = input_embeddings_multiplier
+        self.final_layernorm = final_layernorm
 
         # megatron core pipelining currently depends on model type
         # TODO: remove this dependency ?
@@ -125,6 +131,7 @@ class GPTModel(LanguageModule):
             spec=transformer_layer_spec,
             pre_process=self.pre_process,
             post_process=self.post_process,
+            post_layer_norm=self.final_layernorm,
         )
 
         # Output
@@ -212,6 +219,8 @@ class GPTModel(LanguageModule):
             pass
         elif self.pre_process:
             decoder_input = self.embedding(input_ids=input_ids, position_ids=position_ids)
+            if self.input_embeddings_multiplier != 1.0:
+                decoder_input = decoder_input*self.input_embeddings_multiplier
         else:
             # intermediate stage of pipeline
             # decoder will get hidden_states from encoder.input_tensor
@@ -251,10 +260,10 @@ class GPTModel(LanguageModule):
         )
         if self.log_kurtosis:
             hidden_states = hidden_states_or_logdict["hidden_states"]
-            avg_kurtosis = hidden_states_or_logdict["kurtosis"]
+            metrics = {k: v for k, v in hidden_states_or_logdict.items() if k != "hidden_states"}
         else:
             hidden_states = hidden_states_or_logdict
-            avg_kurtosis = None
+            metrics = {}
 
         if not self.post_process:
             return hidden_states
@@ -286,8 +295,8 @@ class GPTModel(LanguageModule):
         loss = self.compute_language_model_loss(labels, logits)
 
         # Kurtosis calculation.
-        if avg_kurtosis is not None:
-            return {"loss": loss, "kurtosis": avg_kurtosis}
+        if len(metrics) > 0:
+            return {"loss": loss, **metrics}
 
         return loss
 

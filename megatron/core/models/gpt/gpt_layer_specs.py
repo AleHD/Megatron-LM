@@ -8,6 +8,7 @@ from megatron.core.transformer.attention import SelfAttention, SelfAttentionSubm
 from megatron.core.transformer.dot_product_attention import DotProductAttention
 from megatron.core.transformer.enums import AttnMaskType
 from megatron.core.transformer.identity_op import IdentityOp
+from megatron.core.transformer.layer_scale import LayerScale
 from megatron.core.transformer.mlp import MLP, MLPSubmodules
 from megatron.core.transformer.moe.moe_layer import MoELayer, MoESubmodules
 from megatron.core.transformer.moe.shared_experts import SharedExpertMLP
@@ -55,6 +56,9 @@ def get_gpt_layer_with_transformer_engine_spec(
     qk_layernorm: Optional[bool] = False,
     multi_latent_attention: Optional[bool] = False,
     fp8: Optional[str] = None,
+    downscale_residual: Optional[float] = float,
+    attn_layernorm: bool = True,
+    mlp_layernorm: bool = True,
 ) -> ModuleSpec:
     """Use this spec to use lower-level Transformer Engine modules (required for fp8 training).
 
@@ -69,7 +73,8 @@ def get_gpt_layer_with_transformer_engine_spec(
         ModuleSpec: Module specification with TE modules
     """
     mlp = _get_mlp_module_spec(
-        use_te=True, num_experts=num_experts, moe_grouped_gemm=moe_grouped_gemm, fp8=fp8
+        use_te=True, num_experts=num_experts, moe_grouped_gemm=moe_grouped_gemm, fp8=fp8,
+        mlp_layernorm=mlp_layernorm
     )
 
     if multi_latent_attention:
@@ -102,20 +107,20 @@ def get_gpt_layer_with_transformer_engine_spec(
         return ModuleSpec(
             module=TransformerLayer,
             submodules=TransformerLayerSubmodules(
+                input_residual_downscaling=IdentityOp if downscale_residual is None else LayerScale,
                 self_attention=ModuleSpec(
                     module=SelfAttention,
                     params={"attn_mask_type": AttnMaskType.causal},
                     submodules=SelfAttentionSubmodules(
-                        linear_qkv=TELayerNormColumnParallelLinear,
+                        linear_qkv=TELayerNormColumnParallelLinear if attn_layernorm else TEColumnParallelLinear,
                         core_attention=TEDotProductAttention,
                         linear_proj=TERowParallelLinear,
-                        # TENorm significantly harms convergence when used
-                        # for QKLayerNorm; we instead use the Apex implementation.
-                        q_layernorm=FusedLayerNorm if qk_layernorm else IdentityOp,
-                        k_layernorm=FusedLayerNorm if qk_layernorm else IdentityOp,
+                        q_layernorm=TENorm if qk_layernorm else IdentityOp,
+                        k_layernorm=TENorm if qk_layernorm else IdentityOp,
                     ),
                 ),
                 self_attn_bda=get_bias_dropout_add,
+                attention_residual_downscaling=IdentityOp if downscale_residual is None else LayerScale,
                 pre_mlp_layernorm=TENorm if num_experts else IdentityOp,
                 mlp=mlp,
                 mlp_bda=get_bias_dropout_add,
@@ -202,14 +207,21 @@ def _get_mlp_module_spec(
     num_experts: Optional[int] = None,
     moe_grouped_gemm: Optional[bool] = False,
     fp8: Optional[str] = None,
+    mlp_layernorm: bool = True,
 ) -> ModuleSpec:
     """Helper function to get module spec for MLP/MoE"""
     if num_experts is None:
         # Dense MLP w/ or w/o TE modules.
+        if use_te and mlp_layernorm:
+            fc1 = TELayerNormColumnParallelLinear
+        elif use_te:
+            fc1 = TEColumnParallelLinear
+        else:
+            fc1 = ColumnParallelLinear
         return ModuleSpec(
             module=MLP,
             submodules=MLPSubmodules(
-                linear_fc1=TELayerNormColumnParallelLinear if use_te else ColumnParallelLinear,
+                linear_fc1=fc1,
                 linear_fc2=TERowParallelLinear if use_te else RowParallelLinear,
             ),
         )

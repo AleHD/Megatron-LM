@@ -4,10 +4,12 @@ import re
 import signal
 import sys
 import tempfile
+import time
 from typing import List, Optional, Tuple
 
 import click
 import jetclient
+import requests
 import yaml
 from jetclient.services.dtos.pipeline import PipelineStatus
 
@@ -42,6 +44,8 @@ def register_pipeline_terminator(pipeline: jetclient.JETPipeline):
 def launch_and_wait_for_completion(
     test_case: str,
     environment: str,
+    n_repeat: int,
+    time_limit: int,
     container_image: str,
     container_tag: str,
     cluster: str,
@@ -54,6 +58,8 @@ def launch_and_wait_for_completion(
     ).workloads.submit(
         workloads=common.load_workloads(
             test_case=test_case,
+            n_repeat=n_repeat,
+            time_limit=time_limit,
             container_image=container_image,
             container_tag=container_tag,
             environment=environment,
@@ -85,7 +91,18 @@ def launch_and_wait_for_completion(
         flush=True,
     )
 
-    pipeline.wait(max_wait_time=60 * 60 * 24 * 7)
+    n_attempt = 0
+    while n_attempt < 10:
+        try:
+            status = pipeline.wait(max_wait_time=60 * 60 * 24 * 7)
+        except requests.exceptions.ConnectionError:
+            n_attempt += 1
+            print(f"Connection error, try again (attempt {n_attempt})")
+            time.sleep(60)
+        finally:
+            if status == PipelineStatus.SUCCESS:
+                break
+
     print(f"Pipeline terminated; status: {pipeline.get_status()}")
     return pipeline
 
@@ -142,6 +159,8 @@ def parse_finished_training(logs: List[str]) -> Optional[bool]:
 @click.option(
     "--environment", required=True, type=click.Choice(['dev', 'lts']), help="Pytorch LTS or DEV"
 )
+@click.option("--n-repeat", required=False, default=1, type=int)
+@click.option("--time-limit", required=False, default=1800, type=int)
 @click.option(
     "--account",
     required=False,
@@ -165,6 +184,8 @@ def main(
     model: str,
     test_case: str,
     environment: str,
+    n_repeat: int,
+    time_limit: int,
     account: str,
     cluster: str,
     container_tag: str,
@@ -195,6 +216,8 @@ def main(
         pipeline = launch_and_wait_for_completion(
             test_case=test_case,
             environment=environment,
+            n_repeat=n_repeat,
+            time_limit=time_limit,
             container_image=container_image,
             container_tag=container_tag,
             cluster=cluster,

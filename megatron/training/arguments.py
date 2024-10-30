@@ -18,8 +18,8 @@ from megatron.core.models.retro.utils import (
     get_gpt_data_dir as get_retro_data_dir,
 )
 from megatron.core.transformer import TransformerConfig, MLATransformerConfig
+from megatron.training.activations import squared_relu, relu
 from megatron.core.utils import get_torch_version, is_torch_min_version
-from megatron.training.activations import squared_relu
 from megatron.training.utils import update_use_dist_ckpt
 
 
@@ -632,7 +632,6 @@ def validate_args(args, defaults={}):
             print('Warning: disabling --no-load-rng for upcycling.')
 
     if args.log_kurtosis:
-        assert args.tensor_model_parallel_size == 1, "Log kurtosis only implemented when TP=1"
         assert args.pipeline_model_parallel_size == 1, "Log kurtosis only implemented when PP=1"
         assert args.context_parallel_size == 1, "Log kurtosis only implemented when CP=1"
 
@@ -691,8 +690,11 @@ def core_transformer_config_from_args(args, config_class=None):
     else:
         kw_args['bias_activation_fusion'] = args.bias_gelu_fusion
     if args.squared_relu:
-        assert not args.swiglu
+        assert not args.swiglu and not args.relu
         kw_args['activation_func'] = squared_relu
+    if args.relu:
+        assert not args.swiglu and not args.squared_relu
+        kw_args['activation_func'] = relu
     if args.init_method_xavier_uniform:
         kw_args['init_method'] = torch.nn.init.xavier_uniform_
         kw_args['scaled_init_method'] = torch.nn.init.xavier_uniform_
@@ -873,6 +875,12 @@ def _add_network_size_args(parser):
     group.add_argument('--apply-layernorm-1p', action='store_true',
                        help='Adjust LayerNorm weights such that they are centered '
                        'around zero. This improves numerical stability.')
+    group.add_argument('--no-attn-layernorm', action='store_false', dest='attn_layernorm',
+                       help='Disable pre-attention layernorm')
+    group.add_argument('--no-mlp-layernorm', action='store_false', dest='mlp_layernorm',
+                       help='Disable pre-mlp layernorm')
+    group.add_argument('--no-final-layernorm', action='store_false', dest='final_layernorm',
+                       help='Disable final pre-lmhead layernorm')
     group.add_argument('--apply-residual-connection-post-layernorm',
                        action='store_true',
                        help='If set, use original BERT residula connection '
@@ -883,6 +891,8 @@ def _add_network_size_args(parser):
                        'reasons.')
     group.add_argument('--squared-relu', action='store_true',
                        help='Use squared relu activation instead of default gelu')
+    group.add_argument('--relu', action='store_true',
+                       help='Use relu activation instead of default gelu')
     group.add_argument('--swiglu', action='store_true',
                        help='Use gated linear units and SiLU activation instead of default gelu')
     group.add_argument('--onnx-safe', type=bool, required=False,
@@ -895,6 +905,10 @@ def _add_network_size_args(parser):
                        help='Untie embeddings and output weights.')
     group.add_argument('--multi-latent-attention', action='store_true',
                        help='Use multi-latent attention for model.')
+    group.add_argument("--input-embeddings-multiplier", type=float, default=1.0,
+                       help="Multiply input_embeddings by this value")
+    group.add_argument("--downscale-residual", default=None, type=float,
+                       help="If set, add learnable downscaling of the residuals, initialized to this value")
     return parser
 
 

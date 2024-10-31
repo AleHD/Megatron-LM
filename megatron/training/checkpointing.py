@@ -973,6 +973,14 @@ def load_args_from_checkpoint(
         _set_arg('pipeline_model_parallel_size', force=True)
         _set_arg('virtual_pipeline_model_parallel_size', force=True)
         _set_arg('num_layers_per_virtual_pipeline_stage')
+
+    _set_arg('attn_layernorm', force=True)
+    _set_arg('mlp_layernorm', force=True)
+    _set_arg('final_layernorm', force=True)
+    _set_arg('relu', force=True)
+    _set_arg('input_embeddings_multiplier', force=True)
+    _set_arg('downscale_residual', force=True)
+    _set_arg('qk_layernorm', force=True)
     return args, checkpoint_args
 
 

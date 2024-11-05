@@ -91,17 +91,7 @@ def launch_and_wait_for_completion(
         flush=True,
     )
 
-    n_attempt = 0
-    while n_attempt < 10:
-        try:
-            status = pipeline.wait(max_wait_time=60 * 60 * 24 * 7)
-        except requests.exceptions.ConnectionError:
-            n_attempt += 1
-            print(f"Connection error, try again (attempt {n_attempt})")
-            time.sleep(60)
-        finally:
-            if status == PipelineStatus.SUCCESS:
-                break
+    pipeline.wait(max_wait_time=60 * 60 * 24 * 7)
 
     print(f"Pipeline terminated; status: {pipeline.get_status()}")
     return pipeline

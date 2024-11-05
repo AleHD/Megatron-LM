@@ -108,11 +108,12 @@ def model_provider(pre_process=True, post_process=True) -> Union[GPTModel, megat
                 rotary_base=args.rotary_base,
                 rope_scaling=args.use_rope_scaling,
                 log_kurtosis=args.log_kurtosis,
+                input_embeddings_multiplier=args.input_embeddings_multiplier,
                 final_layernorm=args.final_layernorm,
             )
 
-    print("Built model:")
-    print(model)
+    print_rank_0("Built model:")
+    print_rank_0(model)
     return model
 
 

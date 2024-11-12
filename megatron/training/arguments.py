@@ -909,6 +909,7 @@ def _add_network_size_args(parser):
                        help="Multiply input_embeddings by this value")
     group.add_argument("--downscale-residual", default=None, type=float,
                        help="If set, add learnable downscaling of the residuals, initialized to this value")
+    group.add_argument("--single-downscale-residual", action="store_true")
     return parser
 
 
@@ -1032,6 +1033,7 @@ def _add_logging_args(parser):
                        action='store_true',
                        help='Enable world size logging to tensorboard.')
     group.add_argument('--log-kurtosis', action='store_true')
+    group.add_argument('--log-scaler-norm', action='store_true')
     group.add_argument('--wandb-project', type=str, default='',
                        help='The wandb project name. Ignore wandb by default.')
     group.add_argument('--wandb-exp-name', type=str, default='',

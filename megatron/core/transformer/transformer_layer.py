@@ -141,7 +141,7 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
         # [Module 2.1: Attention residual downscaling]
         self.attention_residual_downscaling = build_module(
             submodules.attention_residual_downscaling,
-            hidden_size=self.config.hidden_size,
+            hidden_size=None if self.config.single_downscale_residual else self.config.hidden_size,
             initial_value=self.config.downscale_residual,
         )
 

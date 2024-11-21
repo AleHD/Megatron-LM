@@ -402,7 +402,7 @@ class TransformerBlock(MegatronModule):
         inference_params: InferenceParams = None,
         packed_seq_params: PackedSeqParams = None,
         log_kurtosis: bool = False,
-        log_scaler_norm: bool = False,
+        log_gains_norm: bool = False,
     ):
         """
         Perform the forward pass through the transformer block.
@@ -550,7 +550,7 @@ class TransformerBlock(MegatronModule):
                             normed_acts = hidden_states/(act_rms + 1e-8)
                             curr_kurtosis = (normed_acts.view(-1, normed_acts.shape[-1])**2).mean(0).var()
                             all_kurtosis.append(curr_kurtosis)
-                    if log_scaler_norm:
+                    if log_gains_norm:
                         with torch.no_grad():
                             squarednorm1 = torch.sum(layer.input_residual_downscaling.weight**2)
                             squarednorm2 = torch.sum(layer.attention_residual_downscaling.weight**2)
@@ -574,7 +574,7 @@ class TransformerBlock(MegatronModule):
                            for i in range(0, len(all_kurtosis), chunk_size)]
         kurtosis_dict = {f"kurtosis_chunk_{i}": torch.mean(chunk)
                          for i, chunk in enumerate(kurtosis_chunks)}
-        scaling_dict = {"avg_residual_norm": scaler_norm} if log_scaler_norm else {}
+        scaling_dict = {"avg_gains_norm": scaler_norm} if log_gains_norm else {}
         return {"hidden_states": hidden_states, "avg_act_rms": avg_act_rms,
                 "avg_kurtosis": torch.mean(torch.stack(all_kurtosis)), **kurtosis_dict,
                 **scaling_dict}

@@ -909,7 +909,7 @@ def _add_network_size_args(parser):
                        help="Multiply input_embeddings by this value")
     group.add_argument("--downscale-residual", default=None, type=float,
                        help="If set, add learnable downscaling of the residuals, initialized to this value")
-    group.add_argument("--single-downscale-residual", action="store_true")
+    group.add_argument("--single-residual-gain", action="store_true")
     return parser
 
 
@@ -1033,7 +1033,7 @@ def _add_logging_args(parser):
                        action='store_true',
                        help='Enable world size logging to tensorboard.')
     group.add_argument('--log-kurtosis', action='store_true')
-    group.add_argument('--log-scaler-norm', action='store_true')
+    group.add_argument('--log-gains-norm', action='store_true')
     group.add_argument('--wandb-project', type=str, default='',
                        help='The wandb project name. Ignore wandb by default.')
     group.add_argument('--wandb-exp-name', type=str, default='',
@@ -1347,7 +1347,7 @@ def _add_learning_rate_args(parser):
                        choices=['constant', 'linear', 'cosine', 'inverse-square-root', 'WSD'],
                        help='Learning rate decay function.')
     group.add_argument('--lr-wsd-decay-style', type=str, default='exponential',
-                       choices=['exponential', 'linear', 'cosine'],
+                       choices=['exponential', 'linear', 'cosine', '1-sqrt'],
                        help='Decay style for the annealing phase of WSD'),
     group.add_argument('--lr-decay-iters', type=int, default=None,
                        help='number of iterations to decay learning rate over,'

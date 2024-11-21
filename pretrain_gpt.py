@@ -108,6 +108,7 @@ def model_provider(pre_process=True, post_process=True) -> Union[GPTModel, megat
                 rotary_base=args.rotary_base,
                 rope_scaling=args.use_rope_scaling,
                 log_kurtosis=args.log_kurtosis,
+                log_gains_norm=args.log_gains_norm,
                 input_embeddings_multiplier=args.input_embeddings_multiplier,
                 final_layernorm=args.final_layernorm,
             )
@@ -280,6 +281,9 @@ def train_valid_test_datasets_provider(train_val_test_num_samples):
 
 
 if __name__ == "__main__":
+
+    import logging
+    logging.basicConfig(level=logging.DEBUG)
 
     # Temporary for transition to core datasets
     train_valid_test_datasets_provider.is_distributed = True

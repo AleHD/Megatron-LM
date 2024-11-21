@@ -75,7 +75,7 @@ class GPTModel(LanguageModule):
         rope_scaling: bool = False,
         seq_len_interpolation_factor: Optional[float] = None,
         log_kurtosis: bool = False,
-        log_scaler_norm: bool = False,
+        log_gains_norm: bool = False,
         input_embeddings_multiplier: float = 1.0,
         final_layernorm: bool = True,
     ) -> None:
@@ -85,7 +85,7 @@ class GPTModel(LanguageModule):
             log_config_to_disk(config, locals(), prefix=type(self).__name__)
 
         self.log_kurtosis = log_kurtosis
-        self.log_scaler_norm = log_scaler_norm
+        self.log_gains_norm = log_gains_norm
         self.transformer_layer_spec: ModuleSpec = transformer_layer_spec
         self.vocab_size = vocab_size
         self.max_sequence_length = max_sequence_length
@@ -258,7 +258,7 @@ class GPTModel(LanguageModule):
             rotary_pos_sin=rotary_pos_sin,
             packed_seq_params=packed_seq_params,
             log_kurtosis=self.log_kurtosis,
-            log_scaler_norm=self.log_scaler_norm,
+            log_gains_norm=self.log_gains_norm,
             **(extra_block_kwargs or {}),
         )
         if self.log_kurtosis:

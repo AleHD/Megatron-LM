@@ -340,7 +340,7 @@ class TransformerConfig(ModelParallelConfig):
     """When non-empty, dumps entry-point configs to config_logger_dir"""
 
     downscale_residual: Optional[float] = None
-    single_downscale_residual: bool = False
+    single_residual_gain: bool = False
     flash_decode: bool = False
     """ Use the optimized flash decoding kernel during inference. """
 

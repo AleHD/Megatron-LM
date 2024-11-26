@@ -295,6 +295,9 @@ def forward_step(
         else:
             data = loss_func(output_tensor, non_loss_data=True)
             forward_data_store.append(data)
+    else:
+        output_tensor = output_dict
+        assert isinstance(output_tensor, torch.Tensor)
 
     if config.timers is not None:
         config.timers('forward-compute').stop()

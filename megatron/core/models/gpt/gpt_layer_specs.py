@@ -7,6 +7,7 @@ from megatron.core.tensor_parallel.layers import ColumnParallelLinear, RowParall
 from megatron.core.transformer.attention import SelfAttention, SelfAttentionSubmodules
 from megatron.core.transformer.dot_product_attention import DotProductAttention
 from megatron.core.transformer.enums import AttnMaskType
+from megatron.core.transformer.torch_layer_norm import WrappedTorchRMSNorm
 from megatron.core.transformer.identity_op import IdentityOp
 from megatron.core.transformer.layer_scale import LayerScale
 from megatron.core.transformer.mlp import MLP, MLPSubmodules
@@ -59,6 +60,7 @@ def get_gpt_layer_with_transformer_engine_spec(
     downscale_residual: Optional[float] = float,
     attn_layernorm: bool = True,
     mlp_layernorm: bool = True,
+    use_torchqknorm: bool = False
 ) -> ModuleSpec:
     """Use this spec to use lower-level Transformer Engine modules (required for fp8 training).
 
@@ -104,6 +106,7 @@ def get_gpt_layer_with_transformer_engine_spec(
             ),
         )
     else:
+        qk_norm = WrappedTorchRMSNorm if use_torchqknorm else TENorm
         return ModuleSpec(
             module=TransformerLayer,
             submodules=TransformerLayerSubmodules(
@@ -115,8 +118,8 @@ def get_gpt_layer_with_transformer_engine_spec(
                         linear_qkv=TELayerNormColumnParallelLinear if attn_layernorm else TEColumnParallelLinear,
                         core_attention=TEDotProductAttention,
                         linear_proj=TERowParallelLinear,
-                        q_layernorm=TENorm if qk_layernorm else IdentityOp,
-                        k_layernorm=TENorm if qk_layernorm else IdentityOp,
+                        q_layernorm=qk_norm if qk_layernorm else IdentityOp,
+                        k_layernorm=qk_norm if qk_layernorm else IdentityOp,
                     ),
                 ),
                 self_attn_bda=get_bias_dropout_add,

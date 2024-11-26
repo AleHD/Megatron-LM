@@ -176,6 +176,7 @@ def forward_step(
     num_microbatches,
     input_tensor,
     forward_data_store,
+    metrics_data_store,
     config,
     collect_non_loss_data=False,
     checkpoint_activations_microbatch=None,
@@ -271,16 +272,24 @@ def forward_step(
         context_manager = contextlib.nullcontext()
     with context_manager:
         if checkpoint_activations_microbatch is None:
-            output_dict, loss_func = forward_step_func(data_iterator, model)
+            output_dict_or_tensor, loss_func = forward_step_func(data_iterator, model)
         else:
-            output_dict, loss_func = forward_step_func(
+            output_dict_or_tensor, loss_func = forward_step_func(
                 data_iterator, model, checkpoint_activations_microbatch
             )
 
     num_tokens = torch.tensor(0, dtype=torch.int)
     if parallel_state.is_pipeline_last_stage():
         if not collect_non_loss_data:
-            outputs = loss_func(output_dict)
+            if isinstance(output_dict_or_tensor, dict):
+                output_tensor = output_dict_or_tensor["loss"]
+                metrics_data_store.append(output_dict_or_tensor["tracked_metrics"])
+                tracked_metrics = metrics_data_store
+            else:
+                output_tensor = output_dict_or_tensor
+                tracked_metrics = None
+
+            outputs = loss_func(output_tensor, tracked_metrics=tracked_metrics)
             if len(outputs) == 3:
                 output_tensor, num_tokens, loss_reduced = outputs
                 if not config.calculate_per_token_loss:
@@ -293,11 +302,13 @@ def forward_step(
                 output_tensor /= num_microbatches
             forward_data_store.append(loss_reduced)
         else:
-            data = loss_func(output_tensor, non_loss_data=True)
-            forward_data_store.append(data)
+            raise NotImplementedError()
     else:
-        output_tensor = output_dict
-        assert isinstance(output_tensor, torch.Tensor)
+        if isinstance(output_dict_or_tensor, torch.Tensor):
+            output_tensor = output_dict_or_tensor
+        else:
+            output_tensor = output_dict_or_tensor["hidden_states"]
+            metrics_data_store.append(output_dict_or_tensor["tracked_metrics"])
 
     if config.timers is not None:
         config.timers('forward-compute').stop()

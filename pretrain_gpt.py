@@ -3,6 +3,7 @@
 
 import os
 import torch
+from typing import Optional
 from functools import partial
 from contextlib import nullcontext
 import inspect
@@ -134,7 +135,9 @@ def get_batch(data_iterator):
     return batch.values()
 
 
-def loss_func(loss_mask: torch.Tensor, output_tensor: torch.Tensor | dict[str, torch.Tensor]):
+def loss_func(loss_mask: torch.Tensor, output_tensor: torch.Tensor,
+              tracked_metrics: Optional[list[list[dict[str, torch.Tensor]]]] = None
+              ) -> tuple[float, int, dict[str, torch.Tensor | tuple[torch.Tensor, ...]]]:
     """Loss function.
 
     Args:
@@ -149,13 +152,15 @@ def loss_func(loss_mask: torch.Tensor, output_tensor: torch.Tensor | dict[str, t
     """
     args = get_args()
 
-    if isinstance(output_tensor, dict):
-        losses = output_tensor["loss"].float()
-        metrics = output_tensor
-        del metrics["loss"]
-    else:
-        metrics = {}
-        losses = output_tensor.float()
+    # Handle tracked metrics.
+    if tracked_metrics is not None:
+        # Some basic assertions.
+        assert len(tracked_metrics) == args.global_batch_size//(args.micro_batch_size*args.data_parallel_size)
+        assert all(len(pp_tracked_metrics) == args.num_layers//(args.pipeline_parallel_size)
+                   for pp_tracked_metrics in tracked_metrics)
+        # Now we can sum all the metrics.
+
+    losses = output_tensor.float()
     loss_mask = loss_mask.view(-1).float()
     total_tokens = loss_mask.sum()
     loss = torch.cat([torch.sum(losses.view(-1) * loss_mask).view(1), total_tokens.view(1)])

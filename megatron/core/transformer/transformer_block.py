@@ -449,10 +449,7 @@ class TransformerBlock(MegatronModule):
         #   is called here to be future-proof and corner-case-proof.
         hidden_states = make_viewless_tensor(inp=hidden_states, requires_grad=True, keep_graph=True)
 
-        avg_act_rms = torch.tensor(0.0, dtype=torch.float, device=hidden_states.device) if log_kurtosis else None
-        all_kurtosis = []
-        n_kurtosis_blocks = 4
-        scaler_norm = 0.0
+        tracked_metrics = []
 
         if self.config.sequence_parallel:
             rng_context = tensor_parallel.get_cuda_rng_tracker().fork()
@@ -542,19 +539,27 @@ class TransformerBlock(MegatronModule):
                     ):
                         hidden_states = self.group_prefetch_offload_commit_async(hidden_states)
 
+                    this_layer_metrics = {}
                     if log_kurtosis:
                         with torch.no_grad():
-                            act_rms = (hidden_states**2).mean().sqrt()
-                            avg_act_rms += act_rms/len(self.layers)
+                            # hidden_states: [s, b, h]
+                            this_layer_metrics["squared_activations"] = torch.sum(hidden_states**2)  # [1]
+                            this_layer_metrics["summed_activations"] = torch.sum(hidden_states.view(-1, hidden_states.size(-1)))  # [h]
+                            
+                            #act_rms = (hidden_states**2).mean().sqrt()
+                            #avg_act_rms += act_rms/len(self.layers)
 
-                            normed_acts = hidden_states/(act_rms + 1e-8)
-                            curr_kurtosis = (normed_acts.view(-1, normed_acts.shape[-1])**2).mean(0).var()
-                            all_kurtosis.append(curr_kurtosis)
+                            #normed_acts = hidden_states/(act_rms + 1e-8)
+                            #curr_kurtosis = (normed_acts.view(-1, normed_acts.shape[-1])**2).mean(0).var()
+                            #all_kurtosis.append(curr_kurtosis)
                     if log_gains_norm:
                         with torch.no_grad():
                             squarednorm1 = torch.sum(layer.input_residual_downscaling.weight**2)
                             squarednorm2 = torch.sum(layer.attention_residual_downscaling.weight**2)
-                            scaler_norm += torch.sqrt(squarednorm1 + squarednorm2)/len(self.layers)
+                            #scaler_norm += torch.sqrt(squarednorm1 + squarednorm2)/len(self.layers)
+                            this_layer_metrics["squared_gains"] = squarednorm1 + squarednorm2
+                    if len(this_layer_metrics) > 0:
+                        tracked_metrics.append(this_layer_metrics)
 
         # Final layer norm.
         if self.final_layernorm is not None:
@@ -566,18 +571,19 @@ class TransformerBlock(MegatronModule):
                 inp=hidden_states, requires_grad=True, keep_graph=True
             )
 
-        if len(all_kurtosis) == 0:
+        if len(tracked_metrics) == 0:
             return hidden_states
 
-        chunk_size = int(math.ceil(len(all_kurtosis)/n_kurtosis_blocks))
-        kurtosis_chunks = [torch.stack(all_kurtosis[i:i + chunk_size])
-                           for i in range(0, len(all_kurtosis), chunk_size)]
-        kurtosis_dict = {f"kurtosis_chunk_{i}": torch.mean(chunk)
-                         for i, chunk in enumerate(kurtosis_chunks)}
-        scaling_dict = {"avg_gains_norm": scaler_norm} if log_gains_norm else {}
-        return {"hidden_states": hidden_states, "avg_act_rms": avg_act_rms,
-                "avg_kurtosis": torch.mean(torch.stack(all_kurtosis)), **kurtosis_dict,
-                **scaling_dict}
+        return {"hidden_states": hidden_states, "tracked_metrics": tracked_metrics}
+        #chunk_size = int(math.ceil(len(all_kurtosis)/n_kurtosis_blocks))
+        #kurtosis_chunks = [torch.stack(all_kurtosis[i:i + chunk_size])
+        #                   for i in range(0, len(all_kurtosis), chunk_size)]
+        #kurtosis_dict = {f"kurtosis_chunk_{i}": torch.mean(chunk)
+        #                 for i, chunk in enumerate(kurtosis_chunks)}
+        #scaling_dict = {"avg_gains_norm": scaler_norm} if log_gains_norm else {}
+        #return {"hidden_states": hidden_states, "avg_act_rms": avg_act_rms,
+        #        "avg_kurtosis": torch.mean(torch.stack(all_kurtosis)), **kurtosis_dict,
+        #        **scaling_dict}
 
     def sharded_state_dict(
         self, prefix: str = '', sharded_offsets: tuple = (), metadata: dict = None

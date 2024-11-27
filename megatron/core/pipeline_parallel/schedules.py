@@ -279,18 +279,29 @@ def forward_step(
                 data_iterator, model, checkpoint_activations_microbatch
             )
 
+    if isinstance(output_dict_or_tensor, torch.Tensor):
+        output_tensor = output_dict_or_tensor
+        tracked_metrics = None
+    else:
+        output_tensor = output_dict_or_tensor.get("hidden_states", output_dict_or_tensor["loss"])
+        tracked_metrics = output_dict_or_tensor["tracked_metrics"]
+        if metrics_data_store is None:
+            metrics_data_store += tracked_metrics
+        else:
+            # TODO: We assume seq_parallel is disabled.
+            # TODO: We assume pp=1
+            # We sum all the metrics from previous micro batches.
+            assert len(metrics_data_store) == len(tracked_metrics)
+            for i in range(metrics_data_store):
+                assert set(metrics_data_store[i]) == set(tracked_metrics[i])
+                for key in metrics_data_store[i]:
+                    metrics_data_store[i][key] += tracked_metrics[i][key]
+
+
     num_tokens = torch.tensor(0, dtype=torch.int)
     if parallel_state.is_pipeline_last_stage():
         if not collect_non_loss_data:
-            if isinstance(output_dict_or_tensor, dict):
-                output_tensor = output_dict_or_tensor["loss"]
-                metrics_data_store.append(output_dict_or_tensor["tracked_metrics"])
-                tracked_metrics = metrics_data_store
-            else:
-                output_tensor = output_dict_or_tensor
-                tracked_metrics = None
-
-            outputs = loss_func(output_tensor, tracked_metrics=tracked_metrics)
+            outputs = loss_func(output_tensor, tracked_metrics=tracked_metrics if is_last_microbatch else None)
             if len(outputs) == 3:
                 output_tensor, num_tokens, loss_reduced = outputs
                 if not config.calculate_per_token_loss:
@@ -304,12 +315,6 @@ def forward_step(
             forward_data_store.append(loss_reduced)
         else:
             raise NotImplementedError()
-    else:
-        if isinstance(output_dict_or_tensor, torch.Tensor):
-            output_tensor = output_dict_or_tensor
-        else:
-            output_tensor = output_dict_or_tensor["hidden_states"]
-            metrics_data_store.append(output_dict_or_tensor["tracked_metrics"])
 
     if config.timers is not None:
         config.timers('forward-compute').stop()
@@ -460,6 +465,7 @@ def forward_backward_no_pipelining(
     model_type = get_model_type(model)
 
     forward_data_store = []
+    metrics_data_store = []
     input_tensor, output_tensor_grad = None, None
     total_num_tokens = torch.zeros([], dtype=torch.int, device="cuda")
     with no_sync_func():
@@ -471,9 +477,11 @@ def forward_backward_no_pipelining(
                 num_microbatches,
                 input_tensor,
                 forward_data_store,
+                metrics_data_store,
                 config,
                 collect_non_loss_data,
                 is_first_microbatch=check_first_val_step(first_val_step, forward_only, i == 0),
+                is_last_microbatch=False,
                 current_microbatch=i,
             )
             total_num_tokens += num_tokens.item()
@@ -489,14 +497,26 @@ def forward_backward_no_pipelining(
         num_microbatches,
         input_tensor,
         forward_data_store,
+        metrics_data_store,
         config,
         collect_non_loss_data,
         is_first_microbatch=check_first_val_step(
             first_val_step, forward_only, num_microbatches == 1
         ),
+        is_last_microbatch=True,
         current_microbatch=num_microbatches - 1,
     )
     total_num_tokens += num_tokens.item()
+
+    if any(len(mb_data_store) > 1 for mb_data_store in forward_data_store):
+        # Then this means that we have enabled metrics.
+        # We will replicate the metrics across all mb_data_store, as they are averaged later
+        # when training (see e.g. `losses_reduced` in `megatron.training.training:train_step`).
+        assert all(len(mb_data_store) == 1 or i == (num_microbatches - 1)
+                   for mb_data_store in forward_data_store)  # only the last data_store contains the metrics.
+        metrics = {key: value for key, value in forward_data_store[-1].items() if key != "lm loss"}
+        for i in forward_data_store[:-1]:
+            forward_data_store[i].update(metrics)
 
     if not forward_only:
         backward_step(input_tensor, output_tensor, output_tensor_grad, model_type, config)

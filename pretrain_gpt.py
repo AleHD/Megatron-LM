@@ -2,6 +2,7 @@
 """Pretrain GPT."""
 
 import os
+import math
 import torch
 from typing import Optional
 from functools import partial
@@ -23,6 +24,7 @@ import megatron.legacy.model
 from megatron.core.models.gpt import GPTModel
 from megatron.training import pretrain
 from megatron.core.utils import StragglerDetector
+from megatron.core.num_microbatches_calculator import get_num_microbatches
 from megatron.core.transformer.spec_utils import import_module
 from megatron.training.utils import (
     get_batch_on_this_cp_rank,
@@ -155,13 +157,74 @@ def loss_func(loss_mask: torch.Tensor, output_tensor: torch.Tensor,
     # Handle tracked metrics.
     if tracked_metrics is not None:
         # Some basic assertions.
-        # Here we assume that tracked_metrics have been already summed across all micro batches in the current (dp,tp)-rank.
-        # We also assume tracked_metrics will not be None _only_ exactly once, in the very last micro batch.
+        # Here we assume that tracked_metrics have been already summed across all micro batches in the current (tp,pp)-rank.
+        # In particular, if sequence_parallelism=True, then we have all_reduced(op=SUM) the metrics in tp rank.
+        # We also assume tracked_metrics will not be None at most once, in the very last micro batch.
         # We also assume that we have gathered all `tracked_metrics`, thus we have a list of length `num_layers` in this last pp stage.
         assert len(tracked_metrics) == args.num_layers
-        metrics_keys = set(tracked_metrics[0])  # get keys
-        assert all(set(this_tracked_metrics) == metrics_keys for this_tracked_metrics in tracked_metrics)
+        metrics_keys = sorted(tracked_metrics[0])  # get keys
+        known_metrics = {"squared_activations", "summed_activations", "squared_gains"}
+        assert set(metrics_keys) <= known_metrics, f"Unknown metrics: encountered {set(metrics_keys) - known_metrics}"
+        assert len(metrics_keys) > 0
+        assert all(set(this_tracked_metrics) == set(metrics_keys) for this_tracked_metrics in tracked_metrics)
+
         # Now we can sum all the metrics across dp ranks.
+        # First we construct a big tensor with all the metrics to reduce them in a single collective operation.
+        metrics_sizes = {metric: tracked_metrics[0][metric].size() for metric in metrics_keys}
+        flattened_metrics = []
+        for this_tracked_metrics in tracked_metrics:
+            for metric in metrics_keys:
+                tensor = this_tracked_metrics[metric]
+                assert metrics_sizes[metric] == tensor.size()
+                flattened_metrics.append(tensor.view(-1))
+        flattened_metrics = torch.cat(flattened_metrics)
+
+        # Finally, reduce the tensor.
+        torch.distributed.all_reduce(flattened_metrics, group=mpu.get_data_parallel_group(),
+                                     op=torch.distributed.ReduceOp.SUM)
+
+        # Now we unwrap the flattened metrics back into a list[dict[str, Tensor]].
+        idx = 0
+        for this_tracked_metrics in tracked_metrics:
+            for metric in metrics_keys:
+                numel = math.prod(metrics_sizes[metric])
+                this_tracked_metrics[metric] = flattened_metrics[idx : idx+numel].view(metrics_sizes[metric])
+                idx += numel
+        assert idx == flattened_metrics.numel() - 1
+
+        # Alias some values.
+        seq_len = args.seq_len
+        gbs = args.global_batch_size
+        hidden_size = args.hidden_size
+        acc = gbs//get_num_microbatches()
+
+        # Now we are able to actually compute the metrics the user requested.
+        report_metrics = {}
+        n_kurtosis_blocks = 4
+        if "squared_activations" in metrics_keys:  # then we can compute kurtosis and avg_act_rms.
+            for this_metrics in tracked_metrics:
+                assert this_metrics["squared_activations"].size() == (1,)
+                this_metrics["act_rms"] = torch.sqrt(this_metrics["squared_activations"]/(seq_len*gbs*hidden_size))
+                assert this_metrics["summed_activations"].size() == (hidden_size,)
+                this_metrics["kurtosis"] = torch.var(this_metrics["summed_activations"]/(this_metrics["act_rms"]*seq_len*gbs))
+            report_metrics["avg_act_rms"] = sum(this_metrics["act_rms"] for this_metrics in tracked_metrics)/len(tracked_metrics)
+            report_metrics["avg_kurtosis"] = sum(this_metrics["kurtosis"] for this_metrics in tracked_metrics)/len(tracked_metrics)
+            # Compute chunked kurtosis.
+            chunk_size = int(math.ceil(len(tracked_metrics)/n_kurtosis_blocks))
+            kurtosis_chunks = [[tracked_metrics[j]["kurtosis"] for j in range(i, i + chunk_size)]
+                               for i in range(0, len(tracked_metrics), chunk_size)]
+            kurtosis_dict = {f"kurtosis_chunk_{i}": sum(chunk)/len(chunk)
+                             for i, chunk in enumerate(kurtosis_chunks)}
+            report_metrics.update(kurtosis_dict)
+        if "squared_gains" in metrics_keys:  # then we compute avg_gains_norm.
+            for this_metrics in tracked_metrics:
+                assert this_metrics["squared_gains"].size() == (1,)
+                # We divide by acc because this value `squared_gains` remains constant across all micro batches,
+                # but it is assumed to be summed (instead of averaged) across microbatches.
+                this_metrics["gains_norm"] = torch.sqrt(this_metrics["squared_gains"]/acc)
+            report_metrics["avg_gains_norm"] = sum(this_metrics["gains_norm"] for this_metrics in tracked_metrics)/len(tracked_metrics)
+    else:
+        report_metrics = {}
 
     losses = output_tensor.float()
     loss_mask = loss_mask.view(-1).float()
@@ -184,16 +247,11 @@ def loss_func(loss_mask: torch.Tensor, output_tensor: torch.Tensor,
     torch.distributed.all_reduce(reporting_loss, group=mpu.get_data_parallel_group())
 
     # Reduce other metrics.
-    reduced_metrics = {}
-    for key, value in metrics.items():
-        assert value.size() == ()
-        torch.distributed.all_reduce(value, group=mpu.get_data_parallel_group(), op=torch.distributed.ReduceOp.AVG)
-        reduced_metrics[key] = value
     local_num_tokens = loss[1].clone().detach().to(torch.int)
     return (
         loss[0] * args.context_parallel_size,
         local_num_tokens,
-        {'lm loss': (reporting_loss[0], reporting_loss[1]), **reduced_metrics},
+        {'lm loss': (reporting_loss[0], reporting_loss[1]), **report_metrics},
     )
 
 

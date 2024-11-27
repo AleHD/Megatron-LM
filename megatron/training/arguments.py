@@ -634,6 +634,7 @@ def validate_args(args, defaults={}):
     if args.log_kurtosis:
         assert args.pipeline_model_parallel_size == 1, "Log kurtosis only implemented when PP=1"
         assert args.context_parallel_size == 1, "Log kurtosis only implemented when CP=1"
+        assert not args.sequence_parallel
 
     # Print arguments.
     _print_args("arguments", args)

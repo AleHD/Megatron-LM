@@ -181,6 +181,7 @@ def forward_step(
     collect_non_loss_data=False,
     checkpoint_activations_microbatch=None,
     is_first_microbatch=False,
+    is_last_microbatch=False,
     current_microbatch=None,
     encoder_decoder_xattn=False,
 ):
@@ -650,6 +651,7 @@ def forward_backward_pipelining_with_interleaving(
     total_num_tokens = torch.tensor(0, dtype=torch.int).cuda()
 
     forward_data_store = []
+    metrics_data_store = []
     if not forward_only:
         output_tensor_grads = [[] for _ in range(len(model))]
 

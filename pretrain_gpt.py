@@ -136,7 +136,7 @@ def get_batch(data_iterator):
 
 
 def loss_func(loss_mask: torch.Tensor, output_tensor: torch.Tensor,
-              tracked_metrics: Optional[list[list[dict[str, torch.Tensor]]]] = None
+              tracked_metrics: Optional[list[dict[str, torch.Tensor]]] = None
               ) -> tuple[float, int, dict[str, torch.Tensor | tuple[torch.Tensor, ...]]]:
     """Loss function.
 
@@ -155,10 +155,13 @@ def loss_func(loss_mask: torch.Tensor, output_tensor: torch.Tensor,
     # Handle tracked metrics.
     if tracked_metrics is not None:
         # Some basic assertions.
-        assert len(tracked_metrics) == args.global_batch_size//(args.micro_batch_size*args.data_parallel_size)
-        assert all(len(pp_tracked_metrics) == args.num_layers//(args.pipeline_parallel_size)
-                   for pp_tracked_metrics in tracked_metrics)
-        # Now we can sum all the metrics.
+        # Here we assume that tracked_metrics have been already summed across all micro batches in the current (dp,tp)-rank.
+        # We also assume tracked_metrics will not be None _only_ exactly once, in the very last micro batch.
+        # We also assume that we have gathered all `tracked_metrics`, thus we have a list of length `num_layers` in this last pp stage.
+        assert len(tracked_metrics) == args.num_layers
+        metrics_keys = set(tracked_metrics[0])  # get keys
+        assert all(set(this_tracked_metrics) == metrics_keys for this_tracked_metrics in tracked_metrics)
+        # Now we can sum all the metrics across dp ranks.
 
     losses = output_tensor.float()
     loss_mask = loss_mask.view(-1).float()

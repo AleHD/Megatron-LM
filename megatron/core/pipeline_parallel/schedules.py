@@ -285,17 +285,19 @@ def forward_step(
     else:
         output_tensor = output_dict_or_tensor.get("hidden_states", output_dict_or_tensor["loss"])
         tracked_metrics = output_dict_or_tensor["tracked_metrics"]
-        if metrics_data_store is None:
+        if len(metrics_data_store) == 0:
             metrics_data_store += tracked_metrics
         else:
             # TODO: We assume seq_parallel is disabled.
-            # TODO: We assume pp=1
             # We sum all the metrics from previous micro batches.
-            assert len(metrics_data_store) == len(tracked_metrics)
-            for i in range(metrics_data_store):
+            assert len(metrics_data_store) == len(tracked_metrics), f"{len(metrics_data_store), len(tracked_metrics)}"
+            for i in range(len(metrics_data_store)):
                 assert set(metrics_data_store[i]) == set(tracked_metrics[i])
                 for key in metrics_data_store[i]:
                     metrics_data_store[i][key] += tracked_metrics[i][key]
+        # In the last microbatch we will all_reduce the metrics across the tp rank if sequence_parallel is enabled. 
+        #if is_last_microbatch and model.config.sequence_parallel:
+        tracked_metrics = metrics_data_store
 
 
     num_tokens = torch.tensor(0, dtype=torch.int)
@@ -513,10 +515,10 @@ def forward_backward_no_pipelining(
         # We will replicate the metrics across all mb_data_store, as they are averaged later
         # when training (see e.g. `losses_reduced` in `megatron.training.training:train_step`).
         assert all(len(mb_data_store) == 1 or i == (num_microbatches - 1)
-                   for mb_data_store in forward_data_store)  # only the last data_store contains the metrics.
+                   for i, mb_data_store in enumerate(forward_data_store)), list(map(len, forward_data_store))  # only the last data_store contains the metrics.
         metrics = {key: value for key, value in forward_data_store[-1].items() if key != "lm loss"}
-        for i in forward_data_store[:-1]:
-            forward_data_store[i].update(metrics)
+        for mb_data_store in forward_data_store[:-1]:
+            mb_data_store.update(metrics)
 
     if not forward_only:
         backward_step(input_tensor, output_tensor, output_tensor_grad, model_type, config)
@@ -530,6 +532,7 @@ def forward_backward_no_pipelining(
 
     if config.timers is not None:
         config.timers('forward-backward').stop()
+    #exit()
 
     return forward_data_store
 

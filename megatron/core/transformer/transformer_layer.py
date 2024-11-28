@@ -324,9 +324,7 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
             rotary_pos_sin=rotary_pos_sin,
             packed_seq_params=packed_seq_params,
         )
-        # TODO: assert that, when using seq_parallel, attention_output still contains all the seq_len.
         attention_output = self.input_residual_downscaling(attention_output)
-        #attention_output = 0.1*attention_output
         if bias is not None:
             bias = self.input_residual_downscaling(bias)
         attention_output_with_bias = (attention_output, bias)

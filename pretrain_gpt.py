@@ -190,10 +190,10 @@ def loss_func(loss_mask: torch.Tensor, output_tensor: torch.Tensor,
                 numel = math.prod(metrics_sizes[metric])
                 this_tracked_metrics[metric] = flattened_metrics[idx : idx+numel].view(metrics_sizes[metric])
                 idx += numel
-        assert idx == flattened_metrics.numel() - 1
+        assert idx == flattened_metrics.numel(), f"{idx, flattened_metrics.numel()}"
 
         # Alias some values.
-        seq_len = args.seq_len
+        seq_len = args.seq_length
         gbs = args.global_batch_size
         hidden_size = args.hidden_size
         acc = gbs//get_num_microbatches()
@@ -203,10 +203,9 @@ def loss_func(loss_mask: torch.Tensor, output_tensor: torch.Tensor,
         n_kurtosis_blocks = 4
         if "squared_activations" in metrics_keys:  # then we can compute kurtosis and avg_act_rms.
             for this_metrics in tracked_metrics:
-                assert this_metrics["squared_activations"].size() == (1,)
-                this_metrics["act_rms"] = torch.sqrt(this_metrics["squared_activations"]/(seq_len*gbs*hidden_size))
-                assert this_metrics["summed_activations"].size() == (hidden_size,)
-                this_metrics["kurtosis"] = torch.var(this_metrics["summed_activations"]/(this_metrics["act_rms"]*seq_len*gbs))
+                assert this_metrics["squared_activations"].size() == (hidden_size,), f"{this_metrics['squared_activations'].size()}"
+                this_metrics["act_rms"] = torch.sqrt(torch.sum(this_metrics["squared_activations"]/(seq_len*gbs*hidden_size)))
+                this_metrics["kurtosis"] = torch.var(this_metrics["squared_activations"]/((this_metrics["act_rms"] + 1e-8)**2*seq_len*gbs))
             report_metrics["avg_act_rms"] = sum(this_metrics["act_rms"] for this_metrics in tracked_metrics)/len(tracked_metrics)
             report_metrics["avg_kurtosis"] = sum(this_metrics["kurtosis"] for this_metrics in tracked_metrics)/len(tracked_metrics)
             # Compute chunked kurtosis.
@@ -218,7 +217,7 @@ def loss_func(loss_mask: torch.Tensor, output_tensor: torch.Tensor,
             report_metrics.update(kurtosis_dict)
         if "squared_gains" in metrics_keys:  # then we compute avg_gains_norm.
             for this_metrics in tracked_metrics:
-                assert this_metrics["squared_gains"].size() == (1,)
+                assert this_metrics["squared_gains"].size() == ()
                 # We divide by acc because this value `squared_gains` remains constant across all micro batches,
                 # but it is assumed to be summed (instead of averaged) across microbatches.
                 this_metrics["gains_norm"] = torch.sqrt(this_metrics["squared_gains"]/acc)

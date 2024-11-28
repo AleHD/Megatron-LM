@@ -543,20 +543,11 @@ class TransformerBlock(MegatronModule):
                     if log_kurtosis:
                         with torch.no_grad():
                             # hidden_states: [s, b, h]
-                            this_layer_metrics["squared_activations"] = torch.sum(hidden_states**2)  # [1]
-                            this_layer_metrics["summed_activations"] = torch.sum(hidden_states.view(-1, hidden_states.size(-1)))  # [h]
-                            
-                            #act_rms = (hidden_states**2).mean().sqrt()
-                            #avg_act_rms += act_rms/len(self.layers)
-
-                            #normed_acts = hidden_states/(act_rms + 1e-8)
-                            #curr_kurtosis = (normed_acts.view(-1, normed_acts.shape[-1])**2).mean(0).var()
-                            #all_kurtosis.append(curr_kurtosis)
+                            this_layer_metrics["squared_activations"] = torch.sum(hidden_states.view(-1, hidden_states.size(-1))**2, dim=0)  # size=[h]
                     if log_gains_norm:
                         with torch.no_grad():
                             squarednorm1 = torch.sum(layer.input_residual_downscaling.weight**2)
                             squarednorm2 = torch.sum(layer.attention_residual_downscaling.weight**2)
-                            #scaler_norm += torch.sqrt(squarednorm1 + squarednorm2)/len(self.layers)
                             this_layer_metrics["squared_gains"] = squarednorm1 + squarednorm2
                     if len(this_layer_metrics) > 0:
                         tracked_metrics.append(this_layer_metrics)
@@ -575,15 +566,6 @@ class TransformerBlock(MegatronModule):
             return hidden_states
 
         return {"hidden_states": hidden_states, "tracked_metrics": tracked_metrics}
-        #chunk_size = int(math.ceil(len(all_kurtosis)/n_kurtosis_blocks))
-        #kurtosis_chunks = [torch.stack(all_kurtosis[i:i + chunk_size])
-        #                   for i in range(0, len(all_kurtosis), chunk_size)]
-        #kurtosis_dict = {f"kurtosis_chunk_{i}": torch.mean(chunk)
-        #                 for i, chunk in enumerate(kurtosis_chunks)}
-        #scaling_dict = {"avg_gains_norm": scaler_norm} if log_gains_norm else {}
-        #return {"hidden_states": hidden_states, "avg_act_rms": avg_act_rms,
-        #        "avg_kurtosis": torch.mean(torch.stack(all_kurtosis)), **kurtosis_dict,
-        #        **scaling_dict}
 
     def sharded_state_dict(
         self, prefix: str = '', sharded_offsets: tuple = (), metadata: dict = None

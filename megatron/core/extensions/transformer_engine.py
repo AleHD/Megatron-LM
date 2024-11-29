@@ -12,7 +12,6 @@ import transformer_engine as te
 from packaging.version import Version as PkgVersion
 from torch import Tensor
 from torch.nn.parameter import Parameter
-from transformer_engine.pytorch.export import is_in_onnx_export_mode
 
 from megatron.core import ModelParallelConfig, parallel_state
 from megatron.core.dist_checkpointing.utils import replace_prefix_for_sharding
@@ -20,6 +19,7 @@ from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.parallel_state import (
     get_context_parallel_global_ranks,
     get_context_parallel_group,
+    get_hierarchical_context_parallel_groups,
     get_tensor_and_expert_parallel_world_size,
     get_tensor_model_parallel_group,
     get_tensor_model_parallel_rank,
@@ -594,6 +594,15 @@ class TEDotProductAttention(te.pytorch.DotProductAttention):
             if is_te_min_version("1.10.0"):
                 if cp_comm_type is None:
                     extra_kwargs["cp_comm_type"] = "p2p"
+                elif cp_comm_type == "a2a+p2p":
+                    assert is_te_min_version("1.12.0"), (
+                        f"Transformer-Engine v{get_te_version()} must be >= 1.12.0 to support"
+                        "hierarchical cp commucation."
+                    )
+                    extra_kwargs["cp_comm_type"] = "a2a+p2p"
+                    extra_kwargs["cp_group"] = get_hierarchical_context_parallel_groups(
+                        check_initialized=False
+                    )
                 else:
                     extra_kwargs["cp_comm_type"] = cp_comm_type
         else:
@@ -652,6 +661,7 @@ class TEDotProductAttention(te.pytorch.DotProductAttention):
         value: Tensor,
         attention_mask: Tensor,
         attn_mask_type: AttnMaskType,
+        attention_bias: Tensor = None,
         packed_seq_params: PackedSeqParams = None,
     ):
         """Forward."""
@@ -674,6 +684,16 @@ class TEDotProductAttention(te.pytorch.DotProductAttention):
             packed_seq_kwargs.pop("cu_seqlens_q_padded", None)
             packed_seq_kwargs.pop("cu_seqlens_kv_padded", None)
 
+        attention_bias_kwargs = {}
+        if attention_bias is not None:
+            assert is_te_min_version("1.2.0"), (
+                f"Transformer-Engine v{get_te_version()} must be >= 1.2.0 to support"
+                "`attention_bias`."
+            )
+            attention_bias_kwargs = dict(
+                core_attention_bias_type='post_scale_bias', core_attention_bias=attention_bias
+            )
+
         if self.te_forward_mask_type:
             if qkv_format == 'thd' and is_te_min_version("1.7.0"):
                 # thd format uses flash attention with cuDNN kernel which requires is_padding=True,
@@ -689,10 +709,13 @@ class TEDotProductAttention(te.pytorch.DotProductAttention):
                 value,
                 attention_mask,
                 attn_mask_type=attn_mask_type.name,
+                **attention_bias_kwargs,
                 **packed_seq_kwargs,
             )
         else:
-            core_attn_out = super().forward(query, key, value, attention_mask, **packed_seq_kwargs)
+            core_attn_out = super().forward(
+                query, key, value, attention_mask, **attention_bias_kwargs, **packed_seq_kwargs
+            )
 
         return core_attn_out
 
@@ -846,11 +869,8 @@ if is_te_min_version("1.9.0.dev0"):
             return out, None
 
         def _encode_extra_state(self, state):
-            if is_in_onnx_export_mode():
-                state_serialized = torch.frombuffer(pickle.dumps(state), dtype=torch.uint8)
-            else:
-                state_serialized = io.BytesIO()
-                torch.save(state, state_serialized)
+            state_serialized = io.BytesIO()
+            torch.save(state, state_serialized)
             return state_serialized
 
         def _decode_extra_state(self, state):

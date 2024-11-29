@@ -19,6 +19,7 @@ from megatron.core.transformer.multi_latent_attention import (
 )
 from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_layer import TransformerLayer, TransformerLayerSubmodules
+from megatron.core.utils import is_te_min_version
 
 try:
     from megatron.core.extensions.transformer_engine import (
@@ -106,7 +107,12 @@ def get_gpt_layer_with_transformer_engine_spec(
             ),
         )
     else:
-        qk_norm = WrappedTorchRMSNorm if use_torchqknorm else TENorm
+
+        # TENorm significantly harms convergence when used
+        # for QKLayerNorm if TE Version < 1.9;
+        # we instead use the Apex implementation.
+        qk_norm = TENorm if is_te_min_version("1.9.0") else FusedLayerNorm
+	qk_norm = WrappedTorchRMSNorm if use_torchqknorm else qk_norm
         return ModuleSpec(
             module=TransformerLayer,
             submodules=TransformerLayerSubmodules(

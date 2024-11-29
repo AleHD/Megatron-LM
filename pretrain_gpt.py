@@ -28,6 +28,7 @@ from megatron.core.transformer.spec_utils import import_module
 from megatron.training.utils import (
     get_batch_on_this_cp_rank,
     get_batch_on_this_tp_rank,
+    get_blend_and_blend_per_split
 )
 from megatron.training.arguments import core_transformer_config_from_args
 from megatron.training.yaml_arguments import core_transformer_config_from_yaml

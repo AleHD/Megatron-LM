@@ -680,8 +680,11 @@ def validate_args(args, defaults={}):
             print('Warning: disabling --no-load-rng for upcycling.')
 
     if args.log_kurtosis:
-        assert args.pipeline_model_parallel_size == 1, "Log kurtosis only implemented when PP=1"
+        assert args.virtual_pipeline_model_parallel_size is None, "Log kurtosis only implemented when no interleaved PP=1"
         assert args.context_parallel_size == 1, "Log kurtosis only implemented when CP=1"
+        assert not args.sequence_parallel
+    if args.downscale_residual:
+        assert not args.sequence_parallel
 
     # Print arguments.
     _print_args("arguments", args)

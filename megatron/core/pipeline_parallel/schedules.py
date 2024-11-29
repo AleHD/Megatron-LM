@@ -176,12 +176,15 @@ def forward_step(
     num_microbatches,
     input_tensor,
     forward_data_store,
+    metrics_data_store,
     config,
     collect_non_loss_data=False,
     checkpoint_activations_microbatch=None,
     is_first_microbatch=False,
+    is_last_microbatch=False,
     current_microbatch=None,
     encoder_decoder_xattn=False,
+    previous_metrics_store=None,
 ):
     """Forward step for passed-in model.
 
@@ -271,16 +274,44 @@ def forward_step(
         context_manager = contextlib.nullcontext()
     with context_manager:
         if checkpoint_activations_microbatch is None:
-            output_dict, loss_func = forward_step_func(data_iterator, model)
+            output_dict_or_tensor, loss_func = forward_step_func(data_iterator, model)
         else:
-            output_dict, loss_func = forward_step_func(
+            output_dict_or_tensor, loss_func = forward_step_func(
                 data_iterator, model, checkpoint_activations_microbatch
             )
+
+    if isinstance(output_dict_or_tensor, torch.Tensor):
+        output_tensor = output_dict_or_tensor
+        all_tracked_metrics = None
+    else:
+        if "hidden_states" in output_dict_or_tensor:
+            output_tensor = output_dict_or_tensor["hidden_states"]
+        else:
+            output_tensor = output_dict_or_tensor["loss"]
+        tracked_metrics = output_dict_or_tensor["tracked_metrics"]
+
+        if len(metrics_data_store) == 0:
+            metrics_data_store += tracked_metrics
+        else:
+            # We sum all the metrics from previous micro batches.
+            assert len(metrics_data_store) == len(tracked_metrics), f"{len(metrics_data_store), len(tracked_metrics)}"
+            for i in range(len(metrics_data_store)):
+                assert set(metrics_data_store[i]) == set(tracked_metrics[i])
+                for key in metrics_data_store[i]:
+                    metrics_data_store[i][key] += tracked_metrics[i][key]
+
+        # In the last micro batch, if pp is enabled and we are the last stage, we must have received the
+        # metrics from all the previous layers already in previous_metrics_store.
+        if parallel_state.get_pipeline_model_parallel_world_size() > 1 and parallel_state.is_pipeline_last_stage() and is_last_microbatch:
+            assert previous_metrics_store is not None
+            all_tracked_metrics = previous_metrics_store + metrics_data_store
+        else:
+            all_tracked_metrics = metrics_data_store
 
     num_tokens = torch.tensor(0, dtype=torch.int)
     if parallel_state.is_pipeline_last_stage():
         if not collect_non_loss_data:
-            outputs = loss_func(output_dict)
+            outputs = loss_func(output_tensor, tracked_metrics=all_tracked_metrics if is_last_microbatch else None)
             if len(outputs) == 3:
                 output_tensor, num_tokens, loss_reduced = outputs
                 if not config.calculate_per_token_loss:
@@ -293,11 +324,7 @@ def forward_step(
                 output_tensor /= num_microbatches
             forward_data_store.append(loss_reduced)
         else:
-            data = loss_func(output_tensor, non_loss_data=True)
-            forward_data_store.append(data)
-    else:
-        output_tensor = output_dict
-        assert isinstance(output_tensor, torch.Tensor)
+            raise NotImplementedError()
 
     if config.timers is not None:
         config.timers('forward-compute').stop()
@@ -448,6 +475,7 @@ def forward_backward_no_pipelining(
     model_type = get_model_type(model)
 
     forward_data_store = []
+    metrics_data_store = []
     input_tensor, output_tensor_grad = None, None
     total_num_tokens = torch.zeros([], dtype=torch.int, device="cuda")
     with no_sync_func():
@@ -459,9 +487,11 @@ def forward_backward_no_pipelining(
                 num_microbatches,
                 input_tensor,
                 forward_data_store,
+                metrics_data_store,
                 config,
                 collect_non_loss_data,
                 is_first_microbatch=check_first_val_step(first_val_step, forward_only, i == 0),
+                is_last_microbatch=False,
                 current_microbatch=i,
             )
             total_num_tokens += num_tokens.item()
@@ -477,14 +507,26 @@ def forward_backward_no_pipelining(
         num_microbatches,
         input_tensor,
         forward_data_store,
+        metrics_data_store,
         config,
         collect_non_loss_data,
         is_first_microbatch=check_first_val_step(
             first_val_step, forward_only, num_microbatches == 1
         ),
+        is_last_microbatch=True,
         current_microbatch=num_microbatches - 1,
     )
     total_num_tokens += num_tokens.item()
+
+    if any(len(mb_data_store) > 1 for mb_data_store in forward_data_store):
+        # Then this means that we have enabled metrics.
+        # We will replicate the metrics across all mb_data_store, as they are averaged later
+        # when training (see e.g. `losses_reduced` in `megatron.training.training:train_step`).
+        assert all(len(mb_data_store) == 1 or i == (num_microbatches - 1)
+                   for i, mb_data_store in enumerate(forward_data_store)), list(map(len, forward_data_store))  # only the last data_store contains the metrics.
+        metrics = {key: value for key, value in forward_data_store[-1].items() if key != "lm loss"}
+        for mb_data_store in forward_data_store[:-1]:
+            mb_data_store.update(metrics)
 
     if not forward_only:
         backward_step(input_tensor, output_tensor, output_tensor_grad, model_type, config)
@@ -639,6 +681,7 @@ def forward_backward_pipelining_with_interleaving(
     total_num_tokens = torch.tensor(0, dtype=torch.int).cuda()
 
     forward_data_store = []
+    metrics_data_store = []
     if not forward_only:
         output_tensor_grads = [[] for _ in range(len(model))]
 
@@ -1721,10 +1764,12 @@ def forward_backward_pipelining_without_interleaving(
         input_tensors = []
         output_tensors = []
     forward_data_store = []
+    metrics_data_store = []
 
     # Run warmup forward passes.
     for i in range(num_warmup_microbatches):
         # Decide to checkpoint all layers' activations of the current micro-batch
+        is_last_microbatch = i + 1 == num_microbatches
         if max_outstanding_backprops is not None:
             checkpoint_activations_microbatch = (
                 i % max_outstanding_backprops
@@ -1741,15 +1786,22 @@ def forward_backward_pipelining_without_interleaving(
             num_microbatches,
             input_tensor,
             forward_data_store,
+            metrics_data_store,
             config,
             collect_non_loss_data,
             checkpoint_activations_microbatch,
             check_first_val_step(first_val_step, forward_only, i == 0),
+            is_last_microbatch=is_last_microbatch,
             current_microbatch=i,
             encoder_decoder_xattn=encoder_decoder_xattn,
         )
         send_forward(output_tensor, send_tensor_shapes, config)
         total_num_tokens += num_tokens.item()
+
+        # For ease of implementation, we assume the last microbatch will only appear in the stable
+        # phase when logging metrics. This makes it easier to coordinate sending the metrics to the
+        # next ranks.
+        assert len(metrics_data_store) == 0 or not is_last_microbatch
 
         if not forward_only:
             input_tensors.append(input_tensor)
@@ -1774,6 +1826,23 @@ def forward_backward_pipelining_without_interleaving(
         else:
             checkpoint_activations_microbatch = None
 
+        # If we are in the last iteration and we are tracking metrics,
+        # we need to receive the metrics from the previous pp rank.
+        if last_iteration and len(metrics_data_store) > 0:
+            n_previous_layers = len(metrics_data_store)*rank  # i.e. n_layers_per_pp_rank*n_ranks_before_me
+            metrics_order = sorted(metrics_data_store[0])
+            recv_metrics_shapes = [(n_previous_layers,) + metrics_data_store[0][metric].size()
+                                   for metric in metrics_order]
+            previous_metrics_store = recv_forward(recv_metrics_shapes, config)
+            # previous_metrics_store is a list of length n_metrics, each element is a tensor of
+            # size (n_previous_layers, *size_of_metric).
+            # We need to convert this back to a list of length n_previous_layers, each with a
+            # dictionary {metric -> tensor of size size_of_metric}.
+            previous_metrics_store = [{metric: previous_metrics_store[i][n_layer] for i, metric in enumerate(metrics_order)}
+                                      for n_layer in range(n_previous_layers)]
+        else:
+            previous_metrics_store = None
+
         output_tensor, num_tokens = forward_step(
             forward_step_func,
             data_iterator,
@@ -1781,27 +1850,49 @@ def forward_backward_pipelining_without_interleaving(
             num_microbatches,
             input_tensor,
             forward_data_store,
+            metrics_data_store,
             config,
             collect_non_loss_data,
             checkpoint_activations_microbatch,
             check_first_val_step(
                 first_val_step, forward_only, (i == 0) and (num_warmup_microbatches == 0)
             ),
+            is_last_microbatch=last_iteration,
             current_microbatch=i + num_warmup_microbatches,
             encoder_decoder_xattn=encoder_decoder_xattn,
+            previous_metrics_store=previous_metrics_store
         )
         total_num_tokens += num_tokens.item()
+
 
         if forward_only:
             send_forward(output_tensor, send_tensor_shapes, config)
 
             if not last_iteration:
                 input_tensor = recv_forward(recv_tensor_shapes, config)
+            # If we are in the last iteration and we are tracking metrics,
+            # send concatenated metrics to the next rank.
+            elif last_iteration and len(metrics_data_store) > 0:
+                assert previous_metrics_store is not None
+                metrics_order = sorted(metrics_data_store[0])
+                send_metrics = [torch.stack([this_metric_store[metric] for this_metric_store in previous_metrics_store + metrics_data_store])
+                                for metric in metrics_order]
+                send_metrics_shapes = [metric.size() for metric in send_metrics]
+                send_forward(send_metrics, send_metrics_shapes, config)
+
 
         else:
             output_tensor_grad = send_forward_recv_backward(
                 output_tensor, send_tensor_shapes, config
             )
+            if last_iteration and len(metrics_data_store) > 0:
+                assert previous_metrics_store is not None
+                metrics_order = sorted(metrics_data_store[0])
+                send_metrics = [torch.stack([this_metric_store[metric] for this_metric_store in previous_metrics_store + metrics_data_store])
+                                for metric in metrics_order]
+                send_metrics_shapes = [metric.size() for metric in send_metrics]
+                send_forward(send_metrics, send_metrics_shapes, config)
+
 
             # Add input_tensor and output_tensor to end of list.
             input_tensors.append(input_tensor)
@@ -1826,6 +1917,7 @@ def forward_backward_pipelining_without_interleaving(
             if last_iteration:
                 input_tensor = None
                 send_backward(input_tensor_grad, recv_tensor_shapes, config)
+
             else:
                 input_tensor = send_backward_recv_forward(
                     input_tensor_grad, recv_tensor_shapes, config
@@ -1876,5 +1968,16 @@ def forward_backward_pipelining_without_interleaving(
 
     if config.timers is not None:
         config.timers('forward-backward').stop()
+
+    if any(len(mb_data_store) > 1 for mb_data_store in forward_data_store):
+        # Then this means that we have enabled metrics.
+        # We will replicate the metrics across all mb_data_store, as they are averaged later
+        # when training (see e.g. `losses_reduced` in `megatron.training.training:train_step`).
+        assert all(len(mb_data_store) == 1 or i == (num_microbatches - 1)
+                   for i, mb_data_store in enumerate(forward_data_store)), list(map(len, forward_data_store))  # only the last data_store contains the metrics.
+        metrics = {key: value for key, value in forward_data_store[-1].items() if key != "lm loss"}
+        for mb_data_store in forward_data_store[:-1]:
+            mb_data_store.update(metrics)
+
 
     return forward_data_store

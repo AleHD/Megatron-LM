@@ -328,7 +328,6 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
             packed_seq_params=packed_seq_params,
         )
         attention_output = self.input_residual_downscaling(attention_output)
-        #attention_output = 0.1*attention_output
         if bias is not None:
             bias = self.input_residual_downscaling(bias)
         attention_output_with_bias = (attention_output, bias)

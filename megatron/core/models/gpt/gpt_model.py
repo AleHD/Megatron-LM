@@ -263,12 +263,14 @@ class GPTModel(LanguageModule):
         )
         if self.log_kurtosis:
             hidden_states = hidden_states_or_logdict["hidden_states"]
-            metrics = {k: v for k, v in hidden_states_or_logdict.items() if k != "hidden_states"}
+            tracked_metrics = hidden_states_or_logdict["tracked_metrics"]
         else:
             hidden_states = hidden_states_or_logdict
-            metrics = {}
+            tracked_metrics = {}
 
         if not self.post_process:
+            if len(tracked_metrics) > 0:
+                return {"hidden_states": hidden_states, "tracked_metrics": tracked_metrics}
             return hidden_states
 
         # logits and loss
@@ -298,9 +300,8 @@ class GPTModel(LanguageModule):
         loss = self.compute_language_model_loss(labels, logits)
 
         # Kurtosis calculation.
-        if len(metrics) > 0:
-            return {"loss": loss, **metrics}
-
+        if len(tracked_metrics) > 0:
+            return {"loss": loss, "tracked_metrics": tracked_metrics}
         return loss
 
     def sharded_state_dict(

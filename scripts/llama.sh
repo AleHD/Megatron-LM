@@ -513,8 +513,12 @@ if [ $TODI = true ]; then
 
 	# Log git status.
 	cd /store/swissai/a06/users/ahernnde/workspace/AleHD-Megatron-LM
+	echo "OUTPUT OF GIT LOG:"
 	git log --name-status HEAD^..HEAD
+	echo ---------
+	echo "OUTPUT OF GIT DIFF:"
 	git diff
+	echo ---------
 
 	MAYBE_LOAD=""
 	if [ -f $SAVE_PATH/latest_checkpointed_iteration.txt ]; then

@@ -7,7 +7,7 @@ from megatron.core.tensor_parallel.layers import ColumnParallelLinear, RowParall
 from megatron.core.transformer.attention import SelfAttention, SelfAttentionSubmodules
 from megatron.core.transformer.dot_product_attention import DotProductAttention
 from megatron.core.transformer.enums import AttnMaskType
-from megatron.core.transformer.torch_layer_norm import WrappedTorchRMSNorm
+from megatron.core.transformer.torch_norm import WrappedTorchRMSNorm
 from megatron.core.transformer.identity_op import IdentityOp
 from megatron.core.transformer.layer_scale import LayerScale
 from megatron.core.transformer.mlp import MLP, MLPSubmodules
@@ -46,7 +46,7 @@ try:
 except ImportError:
     import warnings
 
-    from megatron.core.transformer.torch_layer_norm import WrappedTorchLayerNorm
+    from megatron.core.transformer.torch_norm import WrappedTorchLayerNorm
 
     warnings.warn('Apex is not installed. Falling back to Torch LayerNorm')
     LNImpl = WrappedTorchLayerNorm
@@ -112,7 +112,7 @@ def get_gpt_layer_with_transformer_engine_spec(
         # for QKLayerNorm if TE Version < 1.9;
         # we instead use the Apex implementation.
         qk_norm = TENorm if is_te_min_version("1.9.0") else FusedLayerNorm
-	qk_norm = WrappedTorchRMSNorm if use_torchqknorm else qk_norm
+        qk_norm = WrappedTorchRMSNorm if use_torchqknorm else qk_norm
         return ModuleSpec(
             module=TransformerLayer,
             submodules=TransformerLayerSubmodules(

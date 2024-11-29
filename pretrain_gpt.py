@@ -14,6 +14,7 @@ from megatron.training import get_args
 from megatron.training import print_rank_0
 from megatron.training import get_timers
 from megatron.training import get_tokenizer
+from megatron.core import parallel_state
 from megatron.core import mpu
 from megatron.core.enums import ModelType
 from megatron.core.datasets.blended_megatron_dataset_builder import BlendedMegatronDatasetBuilder
@@ -196,7 +197,10 @@ def loss_func(loss_mask: torch.Tensor, output_tensor: torch.Tensor,
         seq_len = args.seq_length
         gbs = args.global_batch_size
         hidden_size = args.hidden_size
-        acc = gbs//get_num_microbatches()
+        # we use this instead of gbs/mbs/dp_size because we reduce(op=SUM, group=DP) the gains
+        # so in order to be consistent when changing the dp_size, we need to divide the gains by the
+        # total number of micro batches (not only in your dp rank)
+        total_acc = gbs/args.micro_batch_size
 
         # Now we are able to actually compute the metrics the user requested.
         report_metrics = {}
@@ -220,7 +224,7 @@ def loss_func(loss_mask: torch.Tensor, output_tensor: torch.Tensor,
                 assert this_metrics["squared_gains"].size() == ()
                 # We divide by acc because this value `squared_gains` remains constant across all micro batches,
                 # but it is assumed to be summed (instead of averaged) across microbatches.
-                this_metrics["gains_norm"] = torch.sqrt(this_metrics["squared_gains"]/acc)
+                this_metrics["gains_norm"] = torch.sqrt(this_metrics["squared_gains"]/total_acc)
             report_metrics["avg_gains_norm"] = sum(this_metrics["gains_norm"] for this_metrics in tracked_metrics)/len(tracked_metrics)
     else:
         report_metrics = {}

@@ -269,7 +269,7 @@ class GPTModel(LanguageModule):
             tracked_metrics = {}
 
         if not self.post_process:
-            if len(metrics) > 0:
+            if len(tracked_metrics) > 0:
                 return {"hidden_states": hidden_states, "tracked_metrics": tracked_metrics}
             return hidden_states
 

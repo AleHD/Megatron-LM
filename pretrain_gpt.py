@@ -4,12 +4,11 @@
 import os
 import math
 import torch
-from typing import Optional
 from functools import partial
 from contextlib import nullcontext
 import inspect
 
-from typing import Union
+from typing import List, Optional, Tuple, Union
 from megatron.training import get_args
 from megatron.training import print_rank_0
 from megatron.training import get_timers
@@ -25,7 +24,6 @@ import megatron.legacy.model
 from megatron.core.models.gpt import GPTModel
 from megatron.training import pretrain
 from megatron.core.utils import StragglerDetector
-from megatron.core.num_microbatches_calculator import get_num_microbatches
 from megatron.core.transformer.spec_utils import import_module
 from megatron.training.utils import (
     get_batch_on_this_cp_rank,
@@ -85,9 +83,13 @@ def model_provider(pre_process=True, post_process=True) -> Union[GPTModel, megat
             transformer_layer_spec = import_module(args.spec)
         else:
             if use_te:
-                transformer_layer_spec = get_gpt_layer_with_transformer_engine_spec(args.num_experts, args.moe_grouped_gemm, args.qk_layernorm, args.multi_latent_attention, args.fp8, args.downscale_residual, args.attn_layernorm, args.mlp_layernorm, args.use_torchqknorm)
+                transformer_layer_spec = get_gpt_layer_with_transformer_engine_spec(
+                    args.num_experts, args.moe_grouped_gemm,
+                    args.qk_layernorm, args.multi_latent_attention, args.fp8)
             else:
-                transformer_layer_spec = get_gpt_layer_local_spec(args.num_experts, args.moe_grouped_gemm, args.qk_layernorm, args.multi_latent_attention)
+                transformer_layer_spec = get_gpt_layer_local_spec(
+                    args.num_experts, args.moe_grouped_gemm,
+                    args.qk_layernorm, args.multi_latent_attention)
 
         build_model_context = nullcontext
         build_model_context_args = {}
@@ -300,15 +302,16 @@ def is_dataset_built_on_rank():
 def core_gpt_dataset_config_from_args(args):
     tokenizer = get_tokenizer()
 
+    # Sometimes --data-path is too long, instead we parse it from a file.
+    blend: Optional[Tuple[List[str], Optional[List[float]]]]
+    blend_per_split: Optional[List[Optional[Tuple[List[str], Optional[List[float]]]]]]
+    blend, blend_per_split = get_blend_and_blend_per_split(args)
+
     return GPTDatasetConfig(
         random_seed=args.seed,
         sequence_length=args.seq_length,
-        blend=get_blend_from_list(args.data_path),
-        blend_per_split=[
-            get_blend_from_list(args.train_data_path),
-            get_blend_from_list(args.valid_data_path),
-            get_blend_from_list(args.test_data_path)
-        ],
+        blend=blend,
+        blend_per_split=blend_per_split,
         renormalize_blend_weights=args.renormalize_blend_weights,
         split=args.split,
         num_dataset_builder_threads=args.num_dataset_builder_threads,
@@ -319,7 +322,7 @@ def core_gpt_dataset_config_from_args(args):
         reset_attention_mask=args.reset_attention_mask,
         eod_mask_loss=args.eod_mask_loss,
         create_attention_mask=args.create_attention_mask_in_dataloader,
-        s3_cache_path = args.s3_cache_path
+        s3_cache_path=args.s3_cache_path,
     )
 
 
@@ -358,9 +361,6 @@ def train_valid_test_datasets_provider(train_val_test_num_samples):
 
 
 if __name__ == "__main__":
-
-    import logging
-    logging.basicConfig(level=logging.DEBUG)
 
     # Temporary for transition to core datasets
     train_valid_test_datasets_provider.is_distributed = True

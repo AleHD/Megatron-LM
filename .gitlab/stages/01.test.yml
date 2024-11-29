@@ -26,15 +26,18 @@ test:build_image:
       - IMAGE: CI_MCORE_LTS_IMAGE
         FILE: Dockerfile.ci.lts
         BASE_IMAGE: nvcr.io/nvidia/pytorch:24.01-py3
+        TAG: mcore-docker-node-large
       - IMAGE: CI_MCORE_DEV_IMAGE
         FILE: Dockerfile.ci.dev
         BASE_IMAGE: nvcr.io/nvidia/pytorch:24.07-py3
+        TAG: mcore-docker-node-large
       - IMAGE: CI_NEMO_IMAGE
         FILE: Dockerfile.ci.lts
         BASE_IMAGE: nvcr.io/nvidian/nemo:nightly
       - IMAGE: UTILITY_IMAGE
         FILE: Dockerfile.linting
         BASE_IMAGE: python:3.10
+        TAG: mcore-docker-node-small
   variables:
     DOCKER_HOST: tcp://docker:2376
     DOCKER_TLS_CERTDIR: '/certs'
@@ -102,16 +105,27 @@ test:build_image:
   parallel:
     matrix:
       - BUCKET: tests/unit_tests/data/
+        BACKWARDS: 'true'
       - BUCKET: tests/unit_tests/dist_checkpointing/
+        BACKWARDS: 'true'
       - BUCKET: tests/unit_tests/distributed/
+        BACKWARDS: 'true'
       - BUCKET: other
+        BACKWARDS: 'true'
+      - BUCKET: tests/unit_tests/test_inference.py tests/unit_tests/test_tokenizer.py tests/unit_tests/test_utilities.py tests/unit_tests/test_training.py
+        BACKWARDS: 'false'
   script:
-    - docker run --name mcore_ci_${CI_PIPELINE_ID} -d --rm -e BUCKET -e TAG -e IMAGE -e UNIT_TEST_REPEAT -e UNIT_TEST_TIMEOUT --gpus all --ipc=host --ulimit memlock=-1 --ulimit stack=67108864 ${IMAGE}:${CI_PIPELINE_ID} bash -c "sleep $(( ${UNIT_TEST_TIMEOUT} * 60 + 60 ))"
+    - docker run --name mcore_ci_${CI_PIPELINE_ID} -d --rm -e BUCKET -e BACKWARDS -e TAG -e IMAGE -e UNIT_TEST_REPEAT -e UNIT_TEST_TIMEOUT --gpus all --ipc=host --ulimit memlock=-1 --ulimit stack=67108864 ${IMAGE}:${CI_PIPELINE_ID} bash -c "sleep $(( ${UNIT_TEST_TIMEOUT} * 60 + 60 ))"
     - |
       CMD=$(cat <<"RUN_TEST_EOF"
       set -euxo pipefail
         
       MCORE_DIR=$([[ "$TAG" == "latest" ]] && echo "" || echo "-$TAG/")
+
+      if [[ "$TAG" != "latest" && $BACKWARDS == "false" ]]; then
+        echo "No backwards checks on $BUCKET"
+        exit 0
+      fi
 
       cd /opt/megatron-lm$MCORE_DIR;
 
@@ -192,7 +206,7 @@ test:pyt(DEV)_mcore(0.9.0):
 
 test:notify_unit_tests:
   extends: [.test_rules]
-  image: ${UTILITY_IMAGE}:${CI_PIPELINE_ID}
+  image: badouralix/curl-jq
   needs:
     - test:pyt(LTS)_mcore(latest)
     - test:pyt(DEV)_mcore(latest)
@@ -201,6 +215,7 @@ test:notify_unit_tests:
   tags:
     - mcore-docker-node-small
   script:
+    - apk add bash
     - env
     - export WEBHOOK_URL=${MCORE_NOTIFICATION_HOOK}
     - export RO_API_TOKEN=${PROJECT_ACCESS_TOKEN_MCORE}
@@ -256,6 +271,7 @@ test:formatting:
         git push -u origin $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME
       fi
     - env
+    - git fetch origin main
     - BASE_REF="$CI_MERGE_REQUEST_TARGET_BRANCH_NAME" CHECK_ONLY=true SKIP_DOCS=$([[ "$CI_MERGE_REQUEST_LABELS" == *"Skip docs"* ]] && echo "true" || echo "false") bash tools/autoformat.sh
 
 test:copyright:
@@ -301,6 +317,7 @@ test:pypi_build_wheel:
   tags: [mcore-docker-node-small]
   variables:
     PUBLISH_DRYRUN: 'yes'
+    PY_ENV: pytorch:24.07
   script:
     - echo $PUBLISH_DRYRUN
     - >

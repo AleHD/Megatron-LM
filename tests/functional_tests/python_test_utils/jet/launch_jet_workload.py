@@ -1,3 +1,4 @@
+import json
 import os
 import pathlib
 import re
@@ -11,6 +12,7 @@ import click
 import jetclient
 import requests
 import yaml
+from jet import workloads
 from jetclient.facades.objects import log as jet_log
 from jetclient.services.dtos.pipeline import PipelineStatus
 
@@ -47,43 +49,52 @@ def launch_and_wait_for_completion(
     environment: str,
     n_repeat: int,
     time_limit: int,
-    container_image: str,
+    container_image: Optional[str],
     container_tag: str,
     cluster: str,
     account: str,
     run_name: Optional[str],
     wandb_experiment: Optional[str],
 ) -> jetclient.JETPipeline:
-    pipeline = jetclient.JETClient(
-        customer='mcore', gitlab_ci_token=os.getenv("RO_API_TOKEN"), env="prod"
-    ).workloads.submit(
-        workloads=common.load_workloads(
-            test_case=test_case,
-            n_repeat=n_repeat,
-            time_limit=time_limit,
-            container_image=container_image,
-            container_tag=container_tag,
-            environment=environment,
-        ),
-        config_id=resolve_cluster_config(cluster),
-        custom_config={
-            "launchers": {cluster: {"account": account, "ntasks_per_node": 8}},
-            "executors": {
-                "jet-ci": {
-                    "environments": {
-                        cluster: {
-                            "variables": {
-                                "RUN_NAME": run_name or "",
-                                "WANDB_API_KEY": os.getenv("WANDB_API_KEY") or "",
-                                "WANDB_EXPERIMENT": wandb_experiment or "",
+    n_submit_errors = 0
+
+    while n_submit_errors < 3:
+        pipeline = jetclient.JETClient(
+            customer='mcore', gitlab_ci_token=os.getenv("RO_API_TOKEN"), env="prod"
+        ).workloads.submit(
+            workloads=common.load_workloads(
+                test_case=test_case,
+                n_repeat=n_repeat,
+                time_limit=time_limit,
+                container_image=container_image,
+                container_tag=container_tag,
+                environment=environment,
+            ),
+            config_id=resolve_cluster_config(cluster),
+            custom_config={
+                "launchers": {cluster: {"account": account, "ntasks_per_node": 8}},
+                "executors": {
+                    "jet-ci": {
+                        "environments": {
+                            cluster: {
+                                "variables": {
+                                    "RUN_NAME": run_name or "",
+                                    "WANDB_API_KEY": os.getenv("WANDB_API_KEY") or "",
+                                    "WANDB_EXPERIMENT": wandb_experiment or "",
+                                }
                             }
                         }
                     }
-                }
+                },
             },
-        },
-        wait_for_validation=True,
-    )
+            wait_for_validation=True,
+            max_wait_time=(60 * 60),
+        )
+        if pipeline.get_status() == PipelineStatus.SUBMISSION_FAILED:
+            n_submit_errors += 1
+            print(f"Failed submitting pipeline. Let's try again ({n_submit_errors}/3)")
+            continue
+        break
 
     register_pipeline_terminator(pipeline=pipeline)
 
@@ -92,14 +103,16 @@ def launch_and_wait_for_completion(
         flush=True,
     )
 
-    n_wait_attempt = 0
-    while n_wait_attempt < 3:
+    n_wait_attempts = 0
+    while n_wait_attempts < 3:
         try:
-            pipeline.wait(max_wait_time=60 * 60 * 24 * 7)
-        except requests.exceptions.ConnectionError as e:
+            pipeline.wait(max_wait_time=60 * 60 * 24 * 7, interval=60 * 3)
+            break
+        except (requests.exceptions.ConnectionError, json.decoder.JSONDecodeError) as e:
             print(e)
-            time.sleep((3**n_wait_attempt) * 60)
-            n_wait_attempt += 1
+            time.sleep(60 * 3**n_wait_attempts)
+            pipeline = workloads.get_pipeline(pipeline.jet_id)
+            n_wait_attempts += 1
 
     print(f"Pipeline terminated; status: {pipeline.get_status()}")
     return pipeline
@@ -118,6 +131,7 @@ def download_job_assets(logs: List[jet_log.JETLog], iteration: int = 0) -> List[
         for log_filename in assets.keys():
             with open(assets_path / log_filename, "w") as fh:
                 assets[log_filename].download(pathlib.Path(fh.name))
+    return assets
 
 
 def extract_logs_to_string(logs: List[jet_log.JETLog]) -> List[str]:
@@ -232,7 +246,7 @@ def main(
                 logs = extract_logs_to_string(logs=jet_log)
                 download_job_assets(logs=jet_log, iteration=n_iteration)
                 break
-            except requests.exceptions.ConnectionError as e:
+            except (requests.exceptions.ConnectionError, json.decoder.JSONDecodeError) as e:
                 print(e)
                 time.sleep((3**n_download_attempt) * 60)
                 n_download_attempt += 1
@@ -255,7 +269,8 @@ def main(
                 print("Detected NCCL failure, attempt restart.")
                 n_attempts += 1
                 continue
-            else:
+
+            if "FAILED tests/functional_tests/python_test_utils/test_ci_pipeline.py" in concat_logs:
                 print("Non-determinism, let's try another node.")
                 n_nondeterminism_attemps += 1
                 continue

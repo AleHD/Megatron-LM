@@ -64,7 +64,7 @@ if [[ $1 -eq 1 ]]; then
 	LR=0.001
 	INIT_STD=0.025
 	SIZE=1
-	SAVE_FREQ=250
+	SAVE_FREQ=2000
 elif [[ $1 -eq 3 ]]; then
 	# batch_size = 180*8192 = ~1.47M tokens
 	# total_tokens = ~14.75B

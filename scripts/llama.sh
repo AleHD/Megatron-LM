@@ -20,6 +20,7 @@ usage () {
 	echo " --single-scaler: Use only one residual scaler (instead of a hidden_size weight)"
 	echo " --no-downscale: Dont use residual downscaling at all"
 	echo " --with-final-ln: Enables final layernorm in outlier protected block"
+	echo " --postnorm: Enables postnorm architecture (instead of pre-norm)"
 	echo " --gelu: Use gelu (instead of relu)"
 	echo " --swiglu: Use swiglu (instead of relu)"
 	echo " --shallow: Don't widen FFN with OP block"
@@ -133,6 +134,7 @@ FP8DPA=false
 OP=false
 TORCH_QKNORM=false
 FINAL_LN=false
+POSTNORM=false
 GELU=false
 SHALLOW=false
 INPUT_SCALING=true
@@ -181,6 +183,8 @@ while [[ $# -gt 0 ]]; do
 			SINGLE_SCALER=true; shift;;
 		--with-final-ln)
 			FINAL_LN=true; shift;;
+		--postnorm)
+			POSTNORM=true; shift;;
 		--extra-name)
 			EXTRA_NAME="-$2"; shift 2;;
 		--wandbid)
@@ -316,6 +320,11 @@ if [ $OP = true ]; then
 
 else
 	OP_ARGS="--swiglu"
+fi
+
+if [ $POSTNORM = true ]; then
+	SUFFIX=$SUFFIX-postnorm
+	OP_ARGS="$OP_ARGS --post-layernorm"
 fi
 
 if [ "$NEW_LR" != "" ]; then
@@ -501,6 +510,7 @@ if [ $TODI = true ]; then
 	#SBATCH --error=$SAVE_PATH/slurmlogs/$NAME_%j.err
 	#SBATCH --time=12:00:00
 	#SBATCH --exclusive
+	#SBATCH --dependency=singleton
 	$RESERV_STRING
 	$GOOD_NODES_STRING
 
@@ -527,7 +537,7 @@ if [ $TODI = true ]; then
 
 	python /store/swissai/a06/users/ahernnde/workspace/AleHD-Megatron-LM/scripts/remove_incomplete_checkpoint.py $SAVE_PATH
 
-	srun --unbuffered bash -c "
+	srun --unbuffered numactl --membind=0-3 bash -c "
 		cd /store/swissai/a06/users/ahernnde/workspace/AleHD-Megatron-LM
 		export PYTHONPATH=\$PWD
 		eval \"$ENVS\" $CMD \$MAYBE_LOAD

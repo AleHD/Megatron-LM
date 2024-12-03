@@ -314,7 +314,8 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
         residual = hidden_states
 
         # Optional Input Layer norm
-        input_layernorm_output = self.input_layernorm(hidden_states)
+        if not self.config.post_layer_norm:
+            input_layernorm_output = self.input_layernorm(hidden_states)
 
         # Self attention.
         attention_output, bias = self.self_attention(
@@ -338,6 +339,8 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
             hidden_states = self.self_attn_bda(self.training, self.config.bias_dropout_fusion)(
                 attention_output_with_bias, residual, self.hidden_dropout
             )
+        if self.config.post_layer_norm:
+            hidden_states = self.input_layernorm(hidden_states)
 
         # Residual connection.
         residual = hidden_states
@@ -367,12 +370,12 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
         residual = hidden_states
 
         # Optional Layer norm post the cross-attention.
-        pre_mlp_layernorm_output = self.pre_mlp_layernorm(hidden_states)
+        if not self.config.post_layer_norm:
+            pre_mlp_layernorm_output = self.pre_mlp_layernorm(hidden_states)
 
         # MLP.
         mlp_output, bias = self.mlp(pre_mlp_layernorm_output)
         mlp_output = self.attention_residual_downscaling(mlp_output)
-        #mlp_output = 0.1*mlp_output
         if bias is not None:
             bias = self.attention_residual_downscaling(bias)
         mlp_output_with_bias = (mlp_output, bias)
@@ -383,6 +386,8 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
             hidden_states = self.mlp_bda(self.training, self.config.bias_dropout_fusion)(
                 mlp_output_with_bias, residual, self.hidden_dropout
             )
+        if self.config.post_layer_norm:
+            hidden_states = self.pre_mlp_layernorm(hidden_states)
 
         # Jit compiled function creates 'view' tensor. This tensor
         # potentially gets saved in the MPU checkpoint function context,

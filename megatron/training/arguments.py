@@ -707,6 +707,10 @@ def validate_args(args, defaults={}):
     if args.downscale_residual:
         assert not args.sequence_parallel
 
+    if args.post_layernorm:
+        assert not args.sequence_parallel
+        assert not args.add_bias_linear
+
     # Print arguments.
     _print_args("arguments", args)
 
@@ -958,6 +962,9 @@ def _add_network_size_args(parser):
                        help='Disable pre-mlp layernorm')
     group.add_argument('--no-final-layernorm', action='store_false', dest='final_layernorm',
                        help='Disable final pre-lmhead layernorm')
+    group.add_argument("--post-layernorm", action="store_true",
+                       help=("When set, apply layer normalization after the attention and mlp "
+                             "instead of before. It is advise to also set --no-final-layernorm"))
     group.add_argument('--apply-residual-connection-post-layernorm',
                        action='store_true',
                        help='If set, use original BERT residula connection '

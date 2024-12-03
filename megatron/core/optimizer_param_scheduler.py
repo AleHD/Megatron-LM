@@ -221,7 +221,8 @@ class OptimizerParamScheduler:
         """
 
         if self.override_opt_param_scheduler:
-            log_single_rank(logger, logging.INFO, f" > overriding {name} value to {cls_value}")
+            if cls_value != sd_value:
+                log_single_rank(logger, logging.INFO, f" > overriding {name} value to {cls_value} from {sd_value}")
             return cls_value
 
         if not self.use_checkpoint_opt_param_scheduler:

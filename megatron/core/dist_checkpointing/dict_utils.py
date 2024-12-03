@@ -122,7 +122,10 @@ def diff(x1: Any, x2: Any, prefix: Tuple = ()) -> Tuple[list, list, list]:
                 _is_mismatch = True
 
         if _is_mismatch:
-            mismatch.append((prefix, type(x1), type(x2)))
+            ap = (prefix, type(x1), type(x2))
+            if type(x1) == type(x2) and (type(x1) in {float, int, bool} or isinstance(x1, torch.Tensor) and x1.numel() == x2.numel() == 1):
+                ap += (x1, x2)
+            mismatch.append(ap)
 
     return only_left, only_right, mismatch
 

@@ -342,6 +342,7 @@ class TransformerConfig(ModelParallelConfig):
     config_logger_dir: str = ""
     """When non-empty, dumps entry-point configs to config_logger_dir"""
 
+    post_layer_norm: bool = False
     downscale_residual: Optional[float] = None
     single_residual_gain: bool = False
     flash_decode: bool = False

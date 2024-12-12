@@ -470,6 +470,16 @@ class MixedPrecisionOptimizer(MegatronOptimizer):
         if timers is not None:
             timers('optimizer-count-zeros').stop()
 
+        #step_set = {param_group["step"] for param_group in self.param_groups
+        #            if "step" in param_group}
+        #if len(step_set) > 0:
+        #    assert len(step_set) == 1, step_set
+        #    step, = step_set
+        #    if step > 1000 and grad_norm > 0.5:
+        #        return False, grad_norm, num_zeros_in_grad
+        #else:
+        #    print(f"Warning! Empty step:, {step_set}")
+
         success = self.step_with_ready_grads()
 
         # Successful update.

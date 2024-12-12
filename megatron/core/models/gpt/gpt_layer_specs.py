@@ -61,7 +61,8 @@ def get_gpt_layer_with_transformer_engine_spec(
     downscale_residual: Optional[float] = float,
     attn_layernorm: bool = True,
     mlp_layernorm: bool = True,
-    use_torchqknorm: bool = False
+    use_torchqknorm: bool = False,
+    post_layer_norm: bool = False,
 ) -> ModuleSpec:
     """Use this spec to use lower-level Transformer Engine modules (required for fp8 training).
 
@@ -77,7 +78,7 @@ def get_gpt_layer_with_transformer_engine_spec(
     """
     mlp = _get_mlp_module_spec(
         use_te=True, num_experts=num_experts, moe_grouped_gemm=moe_grouped_gemm, fp8=fp8,
-        mlp_layernorm=mlp_layernorm
+        mlp_layernorm=mlp_layernorm, post_layer_norm=post_layer_norm
     )
 
     if multi_latent_attention:
@@ -113,6 +114,27 @@ def get_gpt_layer_with_transformer_engine_spec(
         # we instead use the Apex implementation.
         qk_norm = TENorm if is_te_min_version("1.9.0") else FusedLayerNorm
         qk_norm = WrappedTorchNorm if use_torchqknorm else qk_norm
+
+        # Determine how to handle attention layernorm.
+        if attn_layernorm and post_layer_norm:
+            linear_qkv = TEColumnParallelLinear
+            input_layernorm = TENorm
+        elif attn_layernorm:  # standard pre-norm case: TELayerNormColumnParallelLinear handles it.
+            linear_qkv = TELayerNormColumnParallelLinear
+            input_layernorm = IdentityOp
+        else:  # no layernorms at all.
+            linear_qkv = TEColumnParallelLinear
+            input_layernorm = IdentityOp
+
+        # Determine how to handle mlp norm.
+        if mlp_layernorm and post_layer_norm:
+            pre_mlp_layernorm = TENorm
+        else:
+            # even when mlp_layernorm but not post_layer_norm, we have the identity op
+            # because mlp.fc1 will fuse the layernorm :)
+            pre_mlp_layernorm = IdentityOp
+
+        assert num_experts is None
         return ModuleSpec(
             module=TransformerLayer,
             submodules=TransformerLayerSubmodules(
@@ -121,7 +143,7 @@ def get_gpt_layer_with_transformer_engine_spec(
                     module=SelfAttention,
                     params={"attn_mask_type": AttnMaskType.causal},
                     submodules=SelfAttentionSubmodules(
-                        linear_qkv=TELayerNormColumnParallelLinear if attn_layernorm else TEColumnParallelLinear,
+                        linear_qkv=linear_qkv,
                         core_attention=TEDotProductAttention,
                         linear_proj=TERowParallelLinear,
                         q_layernorm=qk_norm if qk_layernorm else IdentityOp,
@@ -130,7 +152,7 @@ def get_gpt_layer_with_transformer_engine_spec(
                 ),
                 self_attn_bda=get_bias_dropout_add,
                 attention_residual_downscaling=IdentityOp if downscale_residual is None else LayerScale,
-                pre_mlp_layernorm=TENorm if num_experts else IdentityOp,
+                pre_mlp_layernorm=pre_mlp_layernorm,
                 mlp=mlp,
                 mlp_bda=get_bias_dropout_add,
             ),
@@ -217,14 +239,16 @@ def _get_mlp_module_spec(
     moe_grouped_gemm: Optional[bool] = False,
     fp8: Optional[str] = None,
     mlp_layernorm: bool = True,
+    post_layer_norm: bool = False,
 ) -> ModuleSpec:
     """Helper function to get module spec for MLP/MoE"""
     if num_experts is None:
         # Dense MLP w/ or w/o TE modules.
-        if use_te and mlp_layernorm:
-            fc1 = TELayerNormColumnParallelLinear
-        elif use_te:
-            fc1 = TEColumnParallelLinear
+        if use_te:
+            if mlp_layernorm and not post_layer_norm:
+                fc1 = TELayerNormColumnParallelLinear
+            else:
+                fc1 = TEColumnParallelLinear
         else:
             fc1 = ColumnParallelLinear
         return ModuleSpec(

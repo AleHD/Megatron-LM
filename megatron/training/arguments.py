@@ -383,11 +383,11 @@ def validate_args(args, defaults={}):
         args.params_dtype = torch.bfloat16
         # bfloat16 requires gradient accumulation and all-reduce to
         # be done in fp32.
-        if not args.accumulate_allreduce_grads_in_fp32:
-            args.accumulate_allreduce_grads_in_fp32 = True
-            if args.rank == 0:
-                print('accumulate and all-reduce gradients in fp32 for '
-                      'bfloat16 data type.', flush=True)
+        #if not args.accumulate_allreduce_grads_in_fp32:
+        #    args.accumulate_allreduce_grads_in_fp32 = True
+        #    if args.rank == 0:
+        #        print('accumulate and all-reduce gradients in fp32 for '
+        #              'bfloat16 data type.', flush=True)
 
     if args.rank == 0:
         print('using {} for parameters ...'.format(args.params_dtype),
@@ -703,12 +703,8 @@ def validate_args(args, defaults={}):
     if args.log_kurtosis:
         assert args.virtual_pipeline_model_parallel_size is None, "Log kurtosis only implemented when no interleaved PP=1"
         assert args.context_parallel_size == 1, "Log kurtosis only implemented when CP=1"
-        assert not args.sequence_parallel
-    if args.downscale_residual:
-        assert not args.sequence_parallel
 
-    if args.post_layernorm:
-        assert not args.sequence_parallel
+    if args.post_layer_norm:
         assert not args.add_bias_linear
 
     # Print arguments.
@@ -962,7 +958,7 @@ def _add_network_size_args(parser):
                        help='Disable pre-mlp layernorm')
     group.add_argument('--no-final-layernorm', action='store_false', dest='final_layernorm',
                        help='Disable final pre-lmhead layernorm')
-    group.add_argument("--post-layernorm", action="store_true",
+    group.add_argument("--post-layer-norm", action="store_true",
                        help=("When set, apply layer normalization after the attention and mlp "
                              "instead of before. It is advise to also set --no-final-layernorm"))
     group.add_argument('--apply-residual-connection-post-layernorm',

@@ -10,9 +10,13 @@ usage () {
 	echo "Options:"
 	echo " --help: Displays this message"
 	echo " --rcp: Use rcp paths and launch using cmd, not slurm"
+	echo " --clariden: Use calriden paths"
 	echo " --fp8: Enables fp8"
 	echo " --fp8-margin: Enables fp8"
 	echo " --fp8-dpa: Enables fp8 DPA"
+
+	echo " --moretokens: 10x the training size"
+	echo " --nologs: Don't log expensive things"
 
 	echo " --op: Enables outlier protected block"
 	echo " --torch-qknorm: Enables torch qk norm"
@@ -31,6 +35,7 @@ usage () {
 	echo " --nodes <nodes>: How many nodes to use"
 	echo " --goodnodes <nodes>: Specify the good node list"
 	echo " --reservation <reservation>: Todi reservation to use"
+	echo " --acc16: Accumulate gradients in bf16 instead of fp32"
 
 	echo " --decay <decay>: Specify weight decay"
 	echo " --lr <lr>: Specify learningrate"
@@ -104,7 +109,7 @@ elif [[ $1 -eq 70 ]]; then
 	# batch_size = ~4.19M
 	# total_tokens = ~20.97B
 	TP=4
-	PP=8
+	PP=4
 	LAYERS=80
 	HIDDEN_SIZE=8192
 	FFN_SIZE=28672
@@ -112,11 +117,11 @@ elif [[ $1 -eq 70 ]]; then
 	NUM_QUERY_GROUPS=8
 	MBS=1
 	GBS=512
-	ITERS=5000
-	LR=0.00008
+	ITERS=2500
+	LR=0.00001
 	INIT_STD=0.01
 	SIZE=70
-	SAVE_FREQ=500
+	SAVE_FREQ=250
 else
 	echo "Invalid llama size: $1"
 	usage
@@ -125,6 +130,9 @@ fi
 shift
 DECAY=0.1
 MINLR=1e-8
+
+MORE_TOKENS=false
+LOGS=true
 
 NEW_LR=""
 NEW_MINLR=""
@@ -143,15 +151,20 @@ REMOVE_INTERLN=true
 DOWNSCALE=true
 SWIGLU=false
 TODI=true
+CLARIDEN=false
 SINGLE_SCALER=false
 EXTRA_NAME=""
 WANDB_ID=""
 SCHEDULER=wsd
 
+BETA2=0.95
+NEW_BETA2=""
+
 GOOD_NODES=""
 NODES=1
 REQ_NODES=1
 RESERV=""
+ACCUMULATE_FP32=true
 
 FP8_MARGIN=0
 
@@ -163,12 +176,18 @@ while [[ $# -gt 0 ]]; do
 	case $1 in
 		--help)
 			usage; exit 0;;
+		--nologs)
+			LOGS=false; shift;;
+		--moretokens)
+			MORE_TOKENS=true; shift;;
 		--fp8)
 			FP8=true; shift;;
 		--fp8-margin)
 			FP8_MARGIN=$2; shift 2;;
 		--rcp)
 			TODI=false; shift;;
+		--clariden)
+			TODI=false; CLARIDEN=true; shift;;
 		--fp8-dpa)
 			FP8DPA=true; shift;;
 		--op)
@@ -185,6 +204,8 @@ while [[ $# -gt 0 ]]; do
 			FINAL_LN=true; shift;;
 		--postnorm)
 			POSTNORM=true; shift;;
+		--acc16)
+			ACCUMULATE_FP32=false; shift;;
 		--extra-name)
 			EXTRA_NAME="-$2"; shift 2;;
 		--wandbid)
@@ -215,6 +236,8 @@ while [[ $# -gt 0 ]]; do
 			NEW_MINLR=$2; shift 2;;
 		--decay)
 			NEW_DECAY=$2; shift 2;;
+		--beta2)
+			NEW_BETA2=$2; shift 2;;
 		--scheduler)
 			SCHEDULER=$2; shift 2;;
 		--adam-eps)
@@ -230,6 +253,18 @@ while [[ $# -gt 0 ]]; do
 	esac
 done
 
+if [ $MORE_TOKENS = true ]; then
+	SUFFIX=$SUFFIX-moretokens
+	ITERS=$(( 10*$ITERS ))
+fi
+
+OTHER_ARGS=()
+if [ $SIZE -eq 70 ] && [ $OP = true ]; then
+	PP=16
+	#OTHER_ARGS+=(--recompute-granularity full --recompute-method uniform --recompute-num-layers 1)
+	#OTHER_ARGS+=(--recompute-granularity full --recompute-method uniform --recompute-num-layers 1)
+fi
+
 if [ $GELU = true ] && [ $SWIGLU = true ]; then
 	echo "Can't use gelu and swiglu at the same time"
 	exit 1
@@ -241,7 +276,7 @@ fi
 
 #= MIDDLE: Set up arguments depending on the commandline =#
 ENVS=""
-if [ $TODI = false ]; then
+if [ $TODI = false ] && [ $CLARIDEN = false ]; then
 	SUFFIX=$SUFFIX-rcp; 
 fi
 
@@ -292,7 +327,10 @@ if [ $OP = true ]; then
 		else
 			BETA=$(echo "print(1/$LAYERS)" | python3)
 		fi
-		OP_ARGS="$OP_ARGS --downscale-residual $BETA --log-gains-norm"
+		OP_ARGS="$OP_ARGS --downscale-residual $BETA"
+		if [ $LOGS = true ]; then
+			OP_ARGS="$OP_ARGS --log-gains-norm"
+		fi
 
 		if [ $SINGLE_SCALER = true ]; then
 			SUFFIX=$SUFFIX-1scaler
@@ -323,8 +361,8 @@ else
 fi
 
 if [ $POSTNORM = true ]; then
-	SUFFIX=$SUFFIX-postnorm
-	OP_ARGS="$OP_ARGS --post-layernorm"
+	SUFFIX=$SUFFIX-postnormFIX
+	OP_ARGS="$OP_ARGS --post-layer-norm"
 fi
 
 if [ "$NEW_LR" != "" ]; then
@@ -357,19 +395,36 @@ else
 	)
 fi
 
+if [ "$NEW_BETA2" != "" ] && [ $NEW_BETA2 != $BETA2 ]; then
+	BETA2=$NEW_BETA2
+	SUFFIX=$SUFFIX-beta2_$BETA2
+fi
+
 if [ $REQ_NODES -ne 1 ]; then
 	SUFFIX=$SUFFIX-nodes$REQ_NODES
 fi
 
+if [ $ACCUMULATE_FP32 = true ]; then
+	OTHER_ARGS+=(--accumulate-allreduce-grads-in-fp32)
+else
+	SUFFIX=$SUFFIX-acc16
+fi
+
+
 SUFFIX=$SUFFIX$EXTRA_NAME
 NAME=llama${SIZE}b$SUFFIX
 
-if [ $TODI = true ]; then
+if [ $TODI = true ] || [ $CLARIDEN = true ]; then
 	GPUS=$TODI_GPUS
 	# 81.816 B tokens
-	DATA_PATH=/store/swissai/a06/users/ahernnde/data/finewebedu-sample-100BT/megatrontokenized/finewebedu-llama3tok_text_document
+	if [ $TODI = true ]; then
+		STORE=/store/swissai/a06
+	else
+		STORE=/capstor/store/cscs/swissai/a06
+	fi
+	DATA_PATH=$STORE/users/ahernnde/data/finewebedu-sample-100BT/megatrontokenized/finewebedu-llama3tok_text_document
 	SAVE_PATH=/capstor/scratch/cscs/ahernnde/checkpoints/megatron/fp8experiments_$SCRIPT_VERSION/$NAME
-	TOKENIZER=/store/swissai/a06/models/Meta-Llama-3.1-8B/
+	TOKENIZER=$STORE/models/Meta-Llama-3.1-8B/
 	NODES=$REQ_NODES
 else
 	GPUS=$RCP_GPUS
@@ -433,7 +488,7 @@ TRAINING_ARGS=(
 	--train-iters $ITERS
 	--weight-decay $DECAY 
 	--adam-beta1 0.9 
-	--adam-beta2 0.95 
+	--adam-beta2 $BETA2
 	--init-method-std $INIT_STD
 	--clip-grad 1.0 
 	--lr $LR
@@ -460,14 +515,18 @@ LOGGING=(
 	--eval-iters 32
 	--wandb-project $WANDB_PROJECT
 	--wandb-exp-name $NAME
-	--log-params-norm
 	--log-progress
 	--log-throughput
 	--log-timers-to-tensorboard
 	--log-validation-ppl-to-tensorboard
-	--log-memory-to-tensorboard
-	--log-kurtosis
 )
+if [ $LOGS = true ]; then
+	LOGGING+=(
+		--log-params-norm
+		--log-memory-to-tensorboard
+		--log-kurtosis
+	)
+fi
 
 EXTRA_ARGS=(
 	--use-distributed-optimizer
@@ -475,16 +534,21 @@ EXTRA_ARGS=(
 	--overlap-param-gather
 	--async-save
 )
+if [ $TORCH_QKNORM = false ]; then
+	EXTRA_ARGS+=(--sequence-parallel)
+fi
+
+
 
 MAYBE_LOAD=""
 if [ -f $SAVE_PATH/latest_checkpointed_iteration.txt ]; then
 	MAYBE_LOAD="--load $SAVE_PATH"
 fi
 
-ARGS="${LLAMA_ARGS[@]} ${TRAINING_ARGS[@]} ${SCHEDULER_ARGS[@]} ${DATA_ARGS[@]} ${LOGGING[@]} ${EXTRA_ARGS[@]} $FP8_ARGS $OP_ARGS"
+ARGS="${LLAMA_ARGS[@]} ${TRAINING_ARGS[@]} ${SCHEDULER_ARGS[@]} ${DATA_ARGS[@]} ${LOGGING[@]} ${EXTRA_ARGS[@]} ${OTHER_ARGS[@]} $FP8_ARGS $OP_ARGS"
 
 #= RUNNING: Run the command, or launch a slurm script if using todi =#
-if [ $TODI = true ]; then
+if [ $TODI = true ] || [ $CLARIDEN = true ]; then
 	DISTRIBUTED_ARGS="${DISTRIBUTED_ARGS[@]} --master-addr=\$MASTER_ADDR --node-rank=\\\$SLURM_PROCID"
 	CMD="torchrun $DISTRIBUTED_ARGS pretrain_gpt.py $ARGS"
 
@@ -494,21 +558,27 @@ if [ $TODI = true ]; then
 	if [ "$GOOD_NODES" != "" ]; then
 		GOOD_NODES_STRING="#SBATCH --nodelist=$GOOD_NODES"
 	fi
+	if [ $TODI = true ]; then
+		ACC_STRING="#SBATCH --account=a06"
+		CONTAINER=$STORE/users/ahernnde/container-image/nemo-swissai/nemo-swissai-oldimg.toml
+	else
+		CONTAINER=$STORE/users/ahernnde/container-image/nemo-swissai/nemo-swissai-clariden.toml
+	fi
 
 	mkdir -p $SAVE_PATH
 	cat > $SAVE_PATH/submission.sbatch <<- EOM
 	#!/bin/bash
-	#SBATCH --account=a06
+	$ACC_STRING
 	#SBATCH --cpus-per-task=288
 	#SBATCH --gres=gpu:4
-	#SBATCH --environment=/store/swissai/a06/users/ahernnde/container-image/nemo-swissai/nemo-swissai-oldimg.toml
+	#SBATCH --environment=$CONTAINER
 	#SBATCH --job-name=$NAME
 	#SBATCH --mem=460000
 	#SBATCH --nodes=$NODES
 	#SBATCH --ntasks-per-node=1
 	#SBATCH --output=$SAVE_PATH/slurmlogs/$NAME_%j.out
 	#SBATCH --error=$SAVE_PATH/slurmlogs/$NAME_%j.err
-	#SBATCH --time=12:00:00
+	#SBATCH --time=3:00:00
 	#SBATCH --exclusive
 	#SBATCH --dependency=singleton
 	$RESERV_STRING
@@ -516,13 +586,13 @@ if [ $TODI = true ]; then
 
 	echo "Using nodes: \$SLURM_JOB_NODELIST"
 	srun -l bash -c 'echo \$(hostname) \$(nvidia-smi | grep -o "|\\s*[0-9]*MiB")'
+	srun -l hostname
 
-	export ENROOT_LIBRARY_PATH=/capstor/scratch/cscs/fmohamed/enrootlibxpmem
-	export WANDB_API_KEY=$(cat /store/swissai/a06/users/ahernnde/.keys/wandb.txt)
+	export WANDB_API_KEY=$(cat $STORE/users/ahernnde/.keys/wandb.txt)
 	export MASTER_ADDR=\$(hostname)
 
 	# Log git status.
-	cd /store/swissai/a06/users/ahernnde/workspace/AleHD-Megatron-LM
+	cd $STORE/users/ahernnde/workspace/AleHD-Megatron-LM
 	echo "OUTPUT OF GIT LOG:"
 	git log --name-status HEAD^..HEAD
 	echo ---------
@@ -535,16 +605,18 @@ if [ $TODI = true ]; then
 		MAYBE_LOAD="--load $SAVE_PATH"
 	fi
 
-	python /store/swissai/a06/users/ahernnde/workspace/AleHD-Megatron-LM/scripts/remove_incomplete_checkpoint.py $SAVE_PATH
+	python $STORE/users/ahernnde/workspace/AleHD-Megatron-LM/scripts/remove_incomplete_checkpoint.py $SAVE_PATH
 
-	srun --unbuffered numactl --membind=0-3 bash -c "
-		cd /store/swissai/a06/users/ahernnde/workspace/AleHD-Megatron-LM
+	srun -l --unbuffered numactl --membind=0-3 bash -c "
+		cd $STORE/users/ahernnde/workspace/AleHD-Megatron-LM
 		export PYTHONPATH=\$PWD
 		eval \"$ENVS\" $CMD \$MAYBE_LOAD
 	"
 	EOM
 	echo "Saved sbatch to $SAVE_PATH/submission.sbatch"
-	export ENROOT_LIBRARY_PATH=/capstor/scratch/cscs/fmohamed/enrootlibxpmem
+	if [ $TODI = true ]; then
+		export ENROOT_LIBRARY_PATH=/capstor/scratch/cscs/fmohamed/enrootlibxpmem
+	fi
 	sbatch $SAVE_PATH/submission.sbatch
 else
 	CMD="torchrun ${DISTRIBUTED_ARGS[@]} --master_addr localhost pretrain_gpt.py $ARGS $MAYBE_LOAD"

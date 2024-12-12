@@ -87,7 +87,8 @@ def model_provider(pre_process=True, post_process=True) -> Union[GPTModel, megat
                 transformer_layer_spec = get_gpt_layer_with_transformer_engine_spec(
                     args.num_experts, args.moe_grouped_gemm,
                     args.qk_layernorm, args.multi_latent_attention, args.fp8,
-                    args.downscale_residual, args.attn_layernorm, args.mlp_layernorm, args.use_torchqknorm)
+                    args.downscale_residual, args.attn_layernorm, args.mlp_layernorm, args.use_torchqknorm,
+                    args.post_layer_norm)
             else:
                 transformer_layer_spec = get_gpt_layer_local_spec(
                     args.num_experts, args.moe_grouped_gemm,
@@ -131,6 +132,10 @@ def model_provider(pre_process=True, post_process=True) -> Union[GPTModel, megat
 
     print_rank_0("Built model:")
     print_rank_0(model)
+
+    print_rank_0("Found dtypes:" + str({param.dtype for param in model.parameters()}))
+    from megatron.core.utils import is_float8tensor
+    print_rank_0("Found dtypes:" + str({is_float8tensor(param) for param in model.parameters()}))
     return model
 
 

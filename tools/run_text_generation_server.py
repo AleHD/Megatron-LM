@@ -67,7 +67,10 @@ def model_provider(pre_process=True, post_process=True) -> Union[GPTModel, megat
             transformer_layer_spec = import_module(args.spec)
         else:
             if use_te:
-                transformer_layer_spec = get_gpt_layer_with_transformer_engine_spec(args.num_experts, args.moe_grouped_gemm, args.qk_layernorm, args.multi_latent_attention, args.fp8, args.downscale_residual, args.attn_layernorm, args.mlp_layernorm)
+                transformer_layer_spec = get_gpt_layer_with_transformer_engine_spec(
+                    args.num_experts, args.moe_grouped_gemm,
+                    args.qk_layernorm, args.multi_latent_attention, args.fp8,
+                    args.downscale_residual, args.attn_layernorm, args.mlp_layernorm, args.use_torchqknorm)
             else:
                 transformer_layer_spec = get_gpt_layer_local_spec(args.num_experts, args.moe_grouped_gemm, args.qk_layernorm)
 
@@ -86,6 +89,7 @@ def model_provider(pre_process=True, post_process=True) -> Union[GPTModel, megat
             rotary_base=args.rotary_base,
             rope_scaling=args.use_rope_scaling,
             log_kurtosis=args.log_kurtosis,
+            input_embeddings_multiplier=args.input_embeddings_multiplier,
             final_layernorm=args.final_layernorm,
         )
 

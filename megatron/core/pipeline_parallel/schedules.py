@@ -945,6 +945,7 @@ def forward_backward_pipelining_with_interleaving(
             num_microbatches,
             input_tensor,
             forward_data_store,
+            [],
             config,
             collect_non_loss_data,
             checkpoint_activations_microbatch,

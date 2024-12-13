@@ -34,6 +34,7 @@ usage () {
 	echo " --debug: Mark run as debug script version"
 	echo " --nodes <nodes>: How many nodes to use"
 	echo " --goodnodes <nodes>: Specify the good node list"
+	echo " --exclude <nodes>: Specify the bad node list"
 	echo " --reservation <reservation>: Todi reservation to use"
 	echo " --acc16: Accumulate gradients in bf16 instead of fp32"
 
@@ -161,6 +162,7 @@ BETA2=0.95
 NEW_BETA2=""
 
 GOOD_NODES=""
+BAD_NODES=""
 NODES=1
 REQ_NODES=1
 RESERV=""
@@ -219,6 +221,8 @@ while [[ $# -gt 0 ]]; do
 			REQ_NODES=$2; shift 2;;
 		--goodnodes)
 			GOOD_NODES=$2; shift 2;;
+		--exclude)
+			BAD_NODES=$2; shift 2;;
 		--debug)
 			SCRIPT_VERSION=$SCRIPT_VERSION-debug; shift;;
 		--reservation)
@@ -558,6 +562,9 @@ if [ $TODI = true ] || [ $CLARIDEN = true ]; then
 	if [ "$GOOD_NODES" != "" ]; then
 		GOOD_NODES_STRING="#SBATCH --nodelist=$GOOD_NODES"
 	fi
+	if [ "$BAD_NODES" != "" ]; then
+		BAD_NODES_STRING="#SBATCH --exclude=$BAD_NODES"
+	fi
 	if [ $TODI = true ]; then
 		ACC_STRING="#SBATCH --account=a06"
 		CONTAINER=$STORE/users/ahernnde/container-image/nemo-swissai/nemo-swissai-oldimg.toml
@@ -578,15 +585,15 @@ if [ $TODI = true ] || [ $CLARIDEN = true ]; then
 	#SBATCH --ntasks-per-node=1
 	#SBATCH --output=$SAVE_PATH/slurmlogs/$NAME_%j.out
 	#SBATCH --error=$SAVE_PATH/slurmlogs/$NAME_%j.err
-	#SBATCH --time=3:00:00
+	#SBATCH --time=12:00:00
 	#SBATCH --exclusive
 	#SBATCH --dependency=singleton
 	$RESERV_STRING
 	$GOOD_NODES_STRING
+	$BAD_NODES_STRING
 
 	echo "Using nodes: \$SLURM_JOB_NODELIST"
 	srun -l bash -c 'echo \$(hostname) \$(nvidia-smi | grep -o "|\\s*[0-9]*MiB")'
-	srun -l hostname
 
 	export WANDB_API_KEY=$(cat $STORE/users/ahernnde/.keys/wandb.txt)
 	export MASTER_ADDR=\$(hostname)

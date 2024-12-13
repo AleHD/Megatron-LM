@@ -428,6 +428,7 @@ if [ $TODI = true ] || [ $CLARIDEN = true ]; then
 	fi
 	DATA_PATH=$STORE/users/ahernnde/data/finewebedu-sample-100BT/megatrontokenized/finewebedu-llama3tok_text_document
 	SAVE_PATH=/capstor/scratch/cscs/ahernnde/checkpoints/megatron/fp8experiments_$SCRIPT_VERSION/$NAME
+	CODE_PATH=$STORE/users/ahernnde/workspace/AleHD-Megatron-LM
 	TOKENIZER=$STORE/models/Meta-Llama-3.1-8B/
 	NODES=$REQ_NODES
 else
@@ -599,7 +600,7 @@ if [ $TODI = true ] || [ $CLARIDEN = true ]; then
 	export MASTER_ADDR=\$(hostname)
 
 	# Log git status.
-	cd $STORE/users/ahernnde/workspace/AleHD-Megatron-LM
+	cd $CODE_PATH
 	echo "OUTPUT OF GIT LOG:"
 	git log --name-status HEAD^..HEAD
 	echo ---------
@@ -615,7 +616,7 @@ if [ $TODI = true ] || [ $CLARIDEN = true ]; then
 	python $STORE/users/ahernnde/workspace/AleHD-Megatron-LM/scripts/remove_incomplete_checkpoint.py $SAVE_PATH
 
 	srun -l --unbuffered numactl --membind=0-3 bash -c "
-		cd $STORE/users/ahernnde/workspace/AleHD-Megatron-LM
+		cd $CODE_PATH
 		export PYTHONPATH=\$PWD
 		eval \"$ENVS\" $CMD \$MAYBE_LOAD
 	"

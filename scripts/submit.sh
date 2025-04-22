@@ -20,6 +20,16 @@ FP8LEN=1024
 WEIGHT_DECAY=0.1
 MIN_LR=1e-8
 
+# Precision aware optimizer.
+DEF_GRAD_DTYPE=fp32
+DEF_PARAM_DTYPE=fp32
+DEF_M1_DTYPE=fp32
+DEF_M2_DTYPE=fp32
+GRAD_DTYPE=$DEF_GRAD_DTYPE
+PARAM_DTYPE=$DEF_PARAM_DTYPE
+M1_DTYPE=$DEF_M1_DTYPE
+M2_DTYPE=$DEF_M2_DTYPE
+
 # Usage function.
 usage () {
 	echo "Usage: llama.sh <size> [options...]"
@@ -39,6 +49,11 @@ usage () {
 	echo " --fp8-dpa-nobwd: Disables fp8 DPA for backward"
 	echo " --fp8-e4m3: Use e4m3 fp8 precision instead of hybrid"
 	echo " --fp8-len <int>: fp8 history length"
+	# Precision aware optimizer.
+	echo " --dtype-grad <fp32/bf16> (default=$DEF_GRAD_DTYPE): Main gradient dtype"
+	echo " --dtype-param <fp32/fp16> (default=$DEF_PARAM_DTYPE): Main parameter dtype"
+	echo " --dtype-m1 <fp32/bf16/fp8> (default=$DEF_M1_DTYPE): Optimizer first moment dtype"
+	echo " --dtype-m2 <fp32/bf16/fp8> (default=$DEF_M2_DTYPE): Optimizer second moment dtype"
 	# Training settings..
 	echo " --tokens <int> ): Amount of tokens to train with (in B)."
 	echo " --lr <float>: Learning rate."
@@ -171,6 +186,14 @@ while [[ $# -gt 0 ]]; do
 			PRECISION=e4m3; shift;;
 		--fp8-len)
 			FP8LEN=$2; shift 2;;
+		--dtype-grad)
+			GRAD_DTYPE=$2; shift 2;;
+		--dtype-param)
+			PARAM_DTYPE=$2; shift 2;;
+		--dtype-m1)
+			M1_DTYPE=$2; shift 2;;
+		--dtype-m2)
+			M2_DTYPE=$2; shift 2;;
 		--extra-name)
 			EXTRA_NAME="-$2"; shift 2;;
 		--tokens)
@@ -250,10 +273,15 @@ if [[ $FP8 = true ]]; then
 	if [[ $FP8LEN -ne 1024 ]]; then
 		SUFFIX=$SUFFIX-fp8len$FP8LEN
 	fi
-	if [[ $FP8_FIRST_AND_LAST -ge 0 ]]; then
+	if [[ $FP8_FIRST_AND_LAST -gt 0 ]]; then
 		SUFFIX=$SUFFIX-fp8safe$FP8_FIRST_AND_LAST
 		FP8_ARGS+=(--first-last-layers-bf16 --num-layers-at-start-in-bf16 $FP8_FIRST_AND_LAST --num-layers-at-end-in-bf16 $FP8_FIRST_AND_LAST)
 	fi
+fi
+
+if [[ $GRAD_DTYPE != $DEF_GRAD_DTYPE ]] || [[ $PARAM_DTYPE != $DEF_PARAM_DTYPE ]] || [[ $M1_DTYPE != $DEF_M1_DTYPE ]] || [[ $M2_DTYPE != $DEF_M2_DTYPE ]]; then
+	SUFFIX=$SUFFIX-dtypeG${GRAD_DTYPE}P${PARAM_DTYPE}M1${M1_DTYPE}M2${M2_DTYPE}
+	FP8_ARGS+=(--use-precision-aware-optimizer --main-grads-dtype $DEF_GRAD_DTYPE --main-params-dtype $DEF_PARAM_DTYPE --exp-avg-dtype $M1_DTYPE --exp-avg-sq-dtype $M2_DTYPE)
 fi
 
 ARCH_ARGS=()
@@ -388,6 +416,11 @@ if [[ $DEBUG = true ]]; then
 fi
 if [[ -z ${WANDB_NAME+x} ]]; then
 	WANDB_NAME=$NAME
+fi
+
+if [[ ${#WANDB_NAME} -gt 128 ]]; then
+	>&2 echo "WANDB_NAME is too long (it shouldn't exceed 128 characters): $WANDB_NAME"
+	exit 1
 fi
 
 #= WRAPPING UP: Set up the _ARGS variables that are going to be used in the end =#

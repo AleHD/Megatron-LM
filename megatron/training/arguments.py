@@ -476,6 +476,13 @@ def validate_args(args, defaults={}):
         
         assert os.environ.get('CUDA_DEVICE_MAX_CONNECTIONS') != "1", \
             'FSDP always requires CUDA_DEVICE_MAX_CONNECTIONS value large than one'
+    if args.lm_head_in_fp8 and not args.untie_embeddings_and_output_weights:
+        warnings.warn(
+            "`lm_head_in_fp8` cannot be enabled when embeddings and output weights are tied. " \
+            "This would raise an error because TE layers do not support skip_weight_param_allocation. \n" \
+            "Setting lm_head_in_fp8 to False..."
+        )
+        args.lm_head_in_fp8 = False
 
     # Parameters dtype.
     args.params_dtype = torch.float
@@ -1069,6 +1076,8 @@ def _add_transformer_engine_args(parser):
                             'Required for CUDA graphs support.')
     group.add_argument('--inference-rng-tracker', action='store_true', default=False,
                        help='Use a random number generator configured for inference.')
+    group.add_argument('--lm-head-in-fp8', action='store_true', default=False,
+                          help='Use fp8 for the lm-head (output layer) weights.')
     return parser
 
 def _add_inference_args(parser):

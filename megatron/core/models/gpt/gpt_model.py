@@ -1,5 +1,6 @@
 # Copyright (c) 2023, NVIDIA CORPORATION. All rights reserved.
 
+import warnings
 from collections import OrderedDict
 from typing import Dict, Literal, Optional
 
@@ -19,7 +20,8 @@ from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_block import TransformerBlock
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.utils import deprecate_inference_params
-
+from megatron.core.extensions.transformer_engine import TEColumnParallelLinear
+from megatron.core.fp8_utils import get_fp8_context
 
 class GPTModel(LanguageModule):
     """GPT Transformer language model.
@@ -161,19 +163,34 @@ class GPTModel(LanguageModule):
                 self.embedding_activation_buffer = None
                 self.grad_output_buffer = None
 
-            self.output_layer = tensor_parallel.ColumnParallelLinear(
-                config.hidden_size,
-                self.vocab_size,
-                config=config,
-                init_method=config.init_method,
-                bias=False,
-                skip_bias_add=False,
-                gather_output=not self.parallel_output,
-                skip_weight_param_allocation=self.pre_process
-                and self.share_embeddings_and_output_weights,
-                embedding_activation_buffer=self.embedding_activation_buffer,
-                grad_output_buffer=self.grad_output_buffer,
-            )
+            # lm_head in fp8 if 1) asked for   AND   2) no tied embeddings 
+            # lm-head-in-fp8 is overriden to False in `arguments.py` if lm-head is tied to embeddings.
+            if self.config.lm_head_in_fp8:
+                self.output_layer = TEColumnParallelLinear(
+                    config.hidden_size,
+                    self.vocab_size,
+                    config=config,
+                    init_method=config.init_method,
+                    gather_output=not self.parallel_output,
+                    bias=False,
+                    skip_bias_add=False,
+                    is_expert=False,
+                    skip_weight_param_allocation=False,
+                )
+            else:
+                self.output_layer = tensor_parallel.ColumnParallelLinear(
+                    config.hidden_size,
+                    self.vocab_size,
+                    config=config,
+                    init_method=config.init_method,
+                    bias=False,
+                    skip_bias_add=False,
+                    gather_output=not self.parallel_output,
+                    skip_weight_param_allocation=self.pre_process
+                    and self.share_embeddings_and_output_weights,
+                    embedding_activation_buffer=self.embedding_activation_buffer,
+                    grad_output_buffer=self.grad_output_buffer,
+                )
 
         if self.pre_process or self.post_process:
             self.setup_embeddings_and_output_layer()
@@ -311,9 +328,14 @@ class GPTModel(LanguageModule):
             and inference_context.materialize_only_last_token_logits
         ):
             hidden_states = hidden_states[-1:, :, :]
-        logits, _ = self.output_layer(
-            hidden_states, weight=output_weight, runtime_gather_output=runtime_gather_output
-        )
+        
+        if self.config.lm_head_in_fp8:
+            with get_fp8_context(self.config):  # needs to be tested
+                logits, _ = self.output_layer(hidden_states)
+        else:
+            logits, _ = self.output_layer(
+                hidden_states, weight=output_weight, runtime_gather_output=runtime_gather_output
+            )
 
         if has_config_logger_enabled(self.config):
             payload = OrderedDict(

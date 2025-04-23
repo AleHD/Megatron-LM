@@ -50,6 +50,7 @@ usage () {
 	echo " --fp8-e4m3: Use e4m3 fp8 precision instead of hybrid"
 	echo " --fp8-len <int>: fp8 history length"
 	echo " --fp8-compute-params: Enables fp8 compute parameters"
+	echo " --fp8-lmhead: Enables fp8 lmhead"
 	# Precision aware optimizer.
 	echo " --dtype-grad <fp32/bf16> (default=$DEF_GRAD_DTYPE): Main gradient dtype"
 	echo " --dtype-param <fp32/fp16> (default=$DEF_PARAM_DTYPE): Main parameter dtype"
@@ -189,6 +190,8 @@ while [[ $# -gt 0 ]]; do
 			FP8LEN=$2; shift 2;;
 		--fp8-compute-params)
 			FP8_COMPUTE_PARAMS=true; shift;; 
+		--fp8-lmhead)
+			FP8_LMHEAD=true; shift;; 
 		--dtype-grad)
 			GRAD_DTYPE=$2; shift 2;;
 		--dtype-param)
@@ -283,6 +286,10 @@ if [[ $FP8 = true ]]; then
 	if [[ $FP8_COMPUTE_PARAMS = true ]]; then
 		SUFFIX=$SUFFIX-fp8PG
 		FP8_ARGS+=(--fp8-param-gather)
+	fi
+	if [[ $FP8_LMHEAD = true ]]; then
+		SUFFIX=$SUFFIX-fp8LM
+		FP8_ARGS+=(--lm-head-in-fp8)
 	fi
 fi
 

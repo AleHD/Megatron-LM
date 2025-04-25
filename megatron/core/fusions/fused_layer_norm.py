@@ -28,7 +28,7 @@ except ImportError:
     HAVE_FUSED_LAYER_NORM = False
 
 try: 
-    from apex.normalization.fused_layer_norm import FusedRMSNormAffineFunction
+    from apex.normalization.fused_layer_norm import FusedRMSNormAffineFunction, FusedRMSNormFunction
 
     HAVE_FUSED_RMS_NORM = True
 except:
@@ -204,6 +204,7 @@ class FusedRMSNorm(torch.nn.Module):
         zero_centered_gamma: bool = False,
         normalization: str = "RMSNorm",  # included to match TE interface
         init_value: Optional[float] = None,
+        learnable: bool = True,
     ):
         super().__init__()
 
@@ -211,6 +212,7 @@ class FusedRMSNorm(torch.nn.Module):
 
         self.zero_centered_gamma = self.config.layernorm_zero_centered_gamma
         self.init_value = init_value
+        self.learnable = learnable
 
         # If someone is trying to instantiate directly FusedRMSNorm but has
         # specified another normalization in the config, raise an error
@@ -227,14 +229,20 @@ class FusedRMSNorm(torch.nn.Module):
         self.hidden_size = torch.Size(hidden_size)
         self.eps = eps
         # Parameters need to be initialized with torch.empty rather than torch.Tensor for correct device placement with nemo2.
-        self.weight = Parameter(torch.empty(*hidden_size))
+        if self.learnable:
+            self.weight = Parameter(torch.empty(*hidden_size))
+        else:
+            self.weight = None
         self.reset_parameters()
         self.sequence_parallel = self.config.sequence_parallel
 
         # set sequence parallelism flag on weight parameters
-        setattr(self.weight, 'sequence_parallel', self.sequence_parallel)
+        if self.learnable:
+            setattr(self.weight, 'sequence_parallel', self.sequence_parallel)
 
     def reset_parameters(self):
+        if self.weight is None:
+            return
 
         if self.init_value is not None:
             init.constant_(self.weight, self.init_value)
@@ -244,24 +252,13 @@ class FusedRMSNorm(torch.nn.Module):
             init.ones_(self.weight)
 
     def forward(self, input: Tensor) -> Tensor:
-
-        weight = self.weight + 1 if self.zero_centered_gamma else self.weight
-
-        if (
-            'memory_efficient'
-            in inspect.getfullargspec(FusedRMSNormAffineFunction.forward).args
-        ):
-            return FusedRMSNormAffineFunction.apply(
-                input,
-                weight,
-                self.hidden_size,
-                self.eps,
-                self.config.memory_efficient_layer_norm,
-            )
+        if self.weight is None:
+            return FusedRMSNormFunction.apply(input, self.hidden_size,
+                                              self.eps, self.config.memory_efficient_layer_norm)
         else:
-            return FusedRMSNormAffineFunction.apply(
-                input, weight, self.hidden_size, self.eps
-            )
+            weight = self.weight + 1 if self.zero_centered_gamma else self.weight
+            return FusedRMSNormAffineFunction.apply(input, weight, self.hidden_size,
+                                                    self.eps, self.config.memory_efficient_layer_norm)
 
 
 class FusedApexNorm:
@@ -275,8 +272,10 @@ class FusedApexNorm:
         hidden_size: int,
         eps: float = 1e-5,
         init_value: Optional[float] = None,
+        learnable: bool = True,
     ):
         if config.normalization == "LayerNorm":
+            assert learnable
             instance = FusedLayerNorm(
                 config=config,
                 hidden_size=hidden_size,
@@ -292,6 +291,7 @@ class FusedApexNorm:
                 eps=eps,
                 zero_centered_gamma=config.layernorm_zero_centered_gamma,
                 init_value=init_value,
+                learnable=learnable,
             )
         else:
             raise Exception('Only LayerNorm and RMSNorm are curently supported')

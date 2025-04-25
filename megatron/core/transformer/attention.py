@@ -706,7 +706,7 @@ class SelfAttention(Attention):
         )
 
         extra_qk_norm_kwargs = {}
-        if self.config.qk_layernorm and self.config.qknorm_impl == "torch" and self.config.no_train_qk_gains and not self.config.qk_dyt:
+        if self.config.qk_layernorm and self.config.qknorm_impl in {"torch", "apex"} and self.config.no_train_qk_gains and not self.config.qk_dyt:
             extra_qk_norm_kwargs["learnable"] = False
 
         if submodules.q_layernorm is not None:

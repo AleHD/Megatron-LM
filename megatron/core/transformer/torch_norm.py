@@ -23,8 +23,8 @@ class WrappedTorchNorm:
         persist_layer_norm: bool = False,
         zero_centered_gamma: bool = False,
         normalization: str = "LayerNorm",
-        learnable: bool = True,
         init_value: Optional[float] = None,
+        learnable: bool = True,
     ):
         assert (
             not config.layernorm_zero_centered_gamma
@@ -32,7 +32,7 @@ class WrappedTorchNorm:
 
         assert not config.persist_layer_norm, f"persist_layer_norm not supported by torch LayerNorm"
 
-        assert not config.sequence_parallel, f"sequence parallel not supported by torch LayerNorm"
+        assert not learnable or not config.sequence_parallel, f"sequence parallel not supported by torch LayerNorm"
 
         assert init_value is None or init_value == 1.0, "init_value is not supported by torch LayerNorm"
 

@@ -300,6 +300,12 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
             else:
                 attention_optional_kwargs["cp_comm_type"] = config.cp_comm_type
 
+        layernorm_attention_optional_kwargs = {}
+        layernorm_other_optional_kwargs = {}
+        if config.use_dyt:
+            layernorm_attention_optional_kwargs.update({"init_value": config.layernorm_init, "location": "attention"})
+            layernorm_other_optional_kwargs.update({"init_value": config.layernorm_init, "location": "other"})
+
         # [Module 2: SelfAttention]
         self.self_attention = build_module(
             submodules.self_attention,
@@ -314,6 +320,7 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
             config=self.config,
             hidden_size=self.config.hidden_size,
             eps=self.config.layernorm_epsilon,
+            **layernorm_attention_optional_kwargs
         )
 
         # [Module 2.2: PostAttention LayerScale]
@@ -333,6 +340,7 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
             config=self.config,
             hidden_size=self.config.hidden_size,
             eps=self.config.layernorm_epsilon,
+            **layernorm_attention_optional_kwargs
         )
 
         # [Module 5: CrossAttention]
@@ -352,6 +360,7 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
             config=self.config,
             hidden_size=self.config.hidden_size,
             eps=self.config.layernorm_epsilon,
+            **layernorm_other_optional_kwargs
         )
         # [Module 8: MLP block]
         self.mlp = build_module(submodules.mlp, config=self.config)
@@ -364,6 +373,7 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
             config=self.config,
             hidden_size=self.config.hidden_size,
             eps=self.config.layernorm_epsilon,
+            **layernorm_other_optional_kwargs
         )
 
         # [Module 8.2: PostMLP LayerScale]

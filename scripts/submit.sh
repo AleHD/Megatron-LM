@@ -19,6 +19,7 @@ PRECISION=hybrid
 FP8LEN=1024
 WEIGHT_DECAY=0.1
 MIN_LR=1e-8
+NORM=rms
 
 # Precision aware optimizer.
 DEF_GRAD_DTYPE=fp32
@@ -36,7 +37,8 @@ usage () {
 	echo "<size>: 300/1/8"
 	echo "Options:"
 	# Misc settings.
-	echo " --debug: Displays this message"
+	echo " --debug: Runs in the debug format"
+	echo " --benchmark: Runs in the benchmark format"
 	echo " --nodes <nodes>: How many nodes to use"
 	echo " --extra-name <name>: Add a suffix to the name"
 	echo " --time (default=$TIME): Change the sbatch time limit"
@@ -64,6 +66,9 @@ usage () {
 	echo " --init <float>: Change init std."
 	echo " --no-prenorm: Disables pre-layernorm."
 	echo " --postnorm: Enables post-layernorm."
+	echo " --use-dyt"
+	echo " --dyt-alpha-attention <float>"
+	echo " --dyt-alpha-other <float>"
 	echo " --qknorm: Enables qk norm."
 	echo " --qkimpl <te|apex|torch>: QK Implementation."
 	echo " --qkinit <float>: Sets qk norm initialization to this value."
@@ -94,7 +99,6 @@ EXTRA_ARGS=()
 TP=1
 PP=1
 UNTIE=true
-INTERMEDIATE_METRICS_INTERVAL=1
 if [[ $1 -eq 300 ]]; then 
 	# batch_size: ~0.52M.
 	# tok/sec/gpu: ~59.5k  (4nodes, bf16).
@@ -114,6 +118,7 @@ if [[ $1 -eq 300 ]]; then
 	SAVE_FREQ=10000
 	DEF_TOKENS=50
 	UNTIE=false
+	INTERMEDIATE_METRICS_INTERVAL=1
 elif [[ $1 -eq 1 ]]; then 
 	# batch_size: ~1.05M.
 	# tok/sec/gpu: ~38.5k (8nodes, bf16).
@@ -135,13 +140,15 @@ elif [[ $1 -eq 1 ]]; then
 	INTERMEDIATE_METRICS_INTERVAL=100
 elif [[ $1 -eq 8 ]]; then 
 	# batch_size: ~1.1M.
-	TP=4  # TODO: TP=1 is faster but we need DP>=64 for this.
+	# tok/sec/gpu: ~8.5k (16nodes, bf16).
+	# 250B ETA: 5d
+	TP=1
 	LAYERS=32
 	HIDDEN_SIZE=4096
 	FFN_SIZE=14336
 	NUM_HEADS=32
 	NUM_QUERY_GROUPS=8
-	MBS=4
+	MBS=1
 	GBS=512
 	ITERS=500  # 1BT.
 	LR=0.0005  # TODO: Previously baseline lr=0.00005, OP lr=0.0003.
@@ -167,6 +174,11 @@ while [[ $# -gt 0 ]]; do
 			SCRIPT_VERSION=$SCRIPT_VERSION-debug;
 			TIME=00:30:00
 			DEBUG=true
+			shift;;
+		--benchmark)
+			SCRIPT_VERSION=$SCRIPT_VERSION-benchmark;
+			TIME=01:00:00
+			BENCHMARK=true
 			shift;;
 		--nodes)
 			NODES=$2; shift 2;;
@@ -216,6 +228,12 @@ while [[ $# -gt 0 ]]; do
 			PRENORM=false; shift;;
 		--postnorm)
 			POSTNORM=true; shift;;
+		--use-dyt)
+			USE_DYT=true; shift;;
+		--dyt-alpha-attention)
+			DYT_ALPHA_ATTENTION=$2; shift 2;;
+		--dyt-alpha-other)
+			DYT_ALPHA_OTHER=$2; shift 2;;
 		--qknorm)
 			QKNORM=true; shift;;
 		--qkimpl)
@@ -311,6 +329,21 @@ if [[ $POSTNORM = true ]]; then
 	SUFFIX=$SUFFIX-postln
 	ARCH_ARGS+=(--post-layer-norm)
 fi
+if [[ $POSTNORM = true ]] || [[ $PRENORM = true ]]; then
+	if [[ $USE_DYT = true ]]; then
+		SUFFIX=$SUFFIX-dyt
+		ARCH_ARGS+=(--use-dyt)
+		if [[ ! -z ${DYT_ALPHA_ATTENTION+x} ]]; then
+			SUFFIX=$SUFFIX-dytAT$DYT_ALPHA_ATTENTION
+			ARCH_ARGS+=(--dyt-alpha-init-attention $DYT_ALPHA_ATTENTION)
+		fi
+		if [[ ! -z ${DYT_ALPHA_OTHER+x} ]]; then
+			SUFFIX=$SUFFIX-dytAO$DYT_ALPHA_OTHER
+			ARCH_ARGS+=(--dyt-alpha-init-other $DYT_ALPHA_OTHER)
+		fi
+	fi
+fi
+
 if [[ $QKNORM = true ]]; then
 	ARCH_ARGS+=(--qk-layernorm)
 	if [[ $QK_DYT = true ]]; then
@@ -411,9 +444,27 @@ if [[ $LOG_GRADS = true ]]; then
 else
 	EXTRA_OPT+=(--use-distributed-optimizer --overlap-param-gather)
 fi
+if [[ $DEBUG = true ]] && [[ $BENCHMARK = true ]]; then
+	>&2 echo "Cant run --debug and --benchmark at the same time."
+	exit 1
+fi
+
+SUFFIX=$SUFFIX$EXTRA_NAME
+if [[ $BENCHMARK = true ]]; then
+	SUFFIX=$SUFFIX-$(date '+%m%d_%H%M')-nodes$NODES
+else
+	EXTRA_LOGS+=(
+		--log-validation-ppl-to-tensorboard
+		--log-intermediate-metrics mean rms kurtosis
+		--log-intermediate-metrics-interval $INTERMEDIATE_METRICS_INTERVAL
+		--log-params-norm-per-param
+		--log-num-zeros-in-grad
+		--log-params-norm
+		--log-weight-decay
+	)
+fi
 
 # Final preparations.
-SUFFIX=$SUFFIX$EXTRA_NAME
 NAME=llama${SIZE}$SUFFIX
 JOB_NAME=$NAME
 ROOT_PATH=$SCRATCH/op$SCRIPT_VERSION/$NAME
@@ -422,11 +473,14 @@ DIFFS_PATH=$ROOT_PATH/diffs
 mkdir -p $SAVE_PATH
 mkdir -p $DIFFS_PATH
 
-if [[ $NODES -eq 1 ]] && [[ $DEBUG = true ]]; then
+if [[ $NODES -eq 1 ]] && [[ $TIME = 00:30:00 ]]; then
 	PARTITION=debug
 fi
 if [[ $DEBUG = true ]]; then
 	JOB_NAME=$NAME-debug
+fi
+if [[ $BENCHMARK = true ]]; then
+	JOB_NAME=$NAME-benchmark
 fi
 if [[ -z ${WANDB_NAME+x} ]]; then
 	WANDB_NAME=$NAME
@@ -512,17 +566,10 @@ LOGGING=(
 	--wandb-save-dir $ROOT_PATH/wandb
 	--timing-log-level 1
 	--tensorboard-log-interval 1
-	--log-progress
 	--log-throughput
 	--log-timers-to-tensorboard
-	--log-validation-ppl-to-tensorboard
-	--log-intermediate-metrics mean rms kurtosis
-	--log-intermediate-metrics-interval $INTERMEDIATE_METRICS_INTERVAL
-	--log-params-norm-per-param
-	--log-num-zeros-in-grad
-	--log-params-norm
+	--log-progress
 	--log-memory-to-tensorboard
-	--log-weight-decay
 )
 LOGGING=(${LOGGING[@]} ${EXTRA_LOGS[@]})
 

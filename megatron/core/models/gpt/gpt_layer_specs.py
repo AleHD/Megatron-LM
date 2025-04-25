@@ -76,6 +76,7 @@ def get_gpt_layer_with_transformer_engine_spec(
     moe_use_legacy_grouped_gemm: Optional[bool] = False,
     layer_scale: Optional[float] = None,
     qk_dyt: bool = False,
+    config: TransformerConfig = None,
 ) -> ModuleSpec:
     """Use this spec to use lower-level Transformer Engine modules (required for fp8 training).
 
@@ -157,6 +158,21 @@ def get_gpt_layer_with_transformer_engine_spec(
         else:
             raise KeyError(f"Unknown qknorm_impl {qknorm_impl}")
 
+        if attn_layernorm and post_layer_norm and config.use_dyt:
+            post_attention_layernorm = DynamicTanh
+        elif attn_layernorm and post_layer_norm:
+            post_attention_layernorm = TENorm
+        else:
+            post_attention_layernorm = IdentityOp
+
+        if mlp_layernorm and post_layer_norm and config.use_dyt:
+            post_mlp_layernorm = DynamicTanh
+        elif mlp_layernorm and post_layer_norm:
+            post_mlp_layernorm = TENorm
+        else:
+            post_mlp_layernorm = IdentityOp
+
+
         return ModuleSpec(
             module=TransformerLayer,
             submodules=TransformerLayerSubmodules(
@@ -177,9 +193,9 @@ def get_gpt_layer_with_transformer_engine_spec(
                 mlp=mlp,
                 mlp_bda=get_bias_dropout_add,
                 attention_layerscale=IdentityOp if layer_scale is None else LayerScale,
-                post_attention_layernorm=TENorm if attn_layernorm and post_layer_norm else IdentityOp,
+                post_attention_layernorm=post_attention_layernorm,
                 mlp_layerscale=IdentityOp if layer_scale is None else LayerScale,
-                post_mlp_layernorm=TENorm if mlp_layernorm and post_layer_norm else IdentityOp,
+                post_mlp_layernorm=post_mlp_layernorm,
             ),
         )
 

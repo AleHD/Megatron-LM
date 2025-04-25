@@ -1,4 +1,6 @@
 # Copyright (c) 2024, NVIDIA CORPORATION. All rights reserved.
+from typing import Optional
+
 import torch
 
 from megatron.core.transformer import TransformerConfig
@@ -21,6 +23,8 @@ class WrappedTorchNorm:
         persist_layer_norm: bool = False,
         zero_centered_gamma: bool = False,
         normalization: str = "LayerNorm",
+        learnable: bool = True,
+        init_value: Optional[float] = None,
     ):
         assert (
             not config.layernorm_zero_centered_gamma
@@ -30,19 +34,26 @@ class WrappedTorchNorm:
 
         assert not config.sequence_parallel, f"sequence parallel not supported by torch LayerNorm"
 
+        assert init_value is None or init_value == 1.0, "init_value is not supported by torch LayerNorm"
+
         assert (
             not config.memory_efficient_layer_norm
         ), f"memory_efficient_layer_norm not supported by torch LayerNorm"
 
+        extra_kw = {}
         if config.normalization == "LayerNorm":
             norm_cls = torch.nn.LayerNorm
+            assert learnable
         elif config.normalization == "RMSNorm":
             assert is_torch_min_version(
                 "2.4.0a0"
             ), 'Torch RMSNorm requires PyTorch version >= 2.4.0'
 
             norm_cls = torch.nn.RMSNorm
+            if not learnable:
+                print("Non-learnable torch :)")
+                extra_kw["elementwise_affine"] = False
         else:
             raise Exception("Only LayerNorm and RMSNorm are currently supported")
 
-        return norm_cls(normalized_shape=hidden_size, eps=eps)
+        return norm_cls(normalized_shape=hidden_size, eps=eps, **extra_kw)

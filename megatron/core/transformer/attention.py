@@ -705,6 +705,10 @@ class SelfAttention(Attention):
             tp_comm_buffer_name='qkv',
         )
 
+        extra_qk_norm_kwargs = {}
+        if self.config.qk_layernorm and self.config.qknorm_impl == "torch" and self.config.no_train_qk_gains and not self.config.qk_dyt:
+            extra_qk_norm_kwargs["learnable"] = False
+
         if submodules.q_layernorm is not None:
             self.q_layernorm = build_module(
                 submodules.q_layernorm,
@@ -712,6 +716,7 @@ class SelfAttention(Attention):
                 config=self.config,
                 eps=self.config.layernorm_epsilon,
                 init_value=self.config.qknorm_init,
+                **extra_qk_norm_kwargs,
             )
         else:
             self.q_layernorm = None
@@ -723,6 +728,7 @@ class SelfAttention(Attention):
                 config=self.config,
                 eps=self.config.layernorm_epsilon,
                 init_value=self.config.qknorm_init,
+                **extra_qk_norm_kwargs,
             )
         else:
             self.k_layernorm = None

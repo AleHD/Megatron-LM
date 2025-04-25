@@ -1377,7 +1377,7 @@ def training_log(loss_dict, total_loss_dict, learning_rate, decoupled_learning_r
 
     tracker = None
     intermediate_interval = args.tensorboard_log_interval if args.log_intermediate_metrics_interval is None else args.log_intermediate_metrics_interval
-    if iteration % intermediate_interval == 0:
+    if iteration % intermediate_interval == 0 and len(args.log_intermediate_metrics) > 0:
         tracker = get_tracker()
         timers("tracker-aggregate", log_level=0).start(barrier=True)
         tracker.aggregate()
@@ -2029,7 +2029,7 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
         # Determine if we should enable the tracker (i.e. if we are going to log this iteration).
         intermediate_interval = args.tensorboard_log_interval if args.log_intermediate_metrics_interval is None else args.log_intermediate_metrics_interval
         tracker = get_tracker()
-        if (iteration + 1) % intermediate_interval == 0:
+        if (iteration + 1) % intermediate_interval == 0 and len(args.log_intermediate_metrics) > 0:
             tracker.enable()
         else:
             tracker.disable()

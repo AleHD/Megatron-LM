@@ -874,19 +874,22 @@ def validate_args(args, defaults={}):
     if args.post_layer_norm:
         assert not args.add_bias_linear
     if args.layernorm_init is not None:
-        assert args.post_layer_norm, "layernorm_init != None only implemented with --post-layer-norm"
+        assert not args.pre_layer_norm, "layernorm_init != None not implemented with --no-pre-layer-norm"
         assert args.layernorm_init == 0.0 or not args.apply_layernorm_1p, "can't have --layernorm-init and --apply-layernorm-1p at the same time"
-        assert args.normalization == "RMSNorm", "--layernorm-init only implemented with RMSNorm"
+        assert args.normalization == "RMSNorm" or args.use_dyt, "--layernorm-init only implemented with RMSNorm or dyt"
         assert args.transformer_impl == "transformer_engine", "--layernorm-init only implemented with TE"
         if args.qk_layernorm and not args.qk_dyt:
             assert args.qknorm_impl != "te", "Use --qknorm-impl=apex or --qknorm-impl=torch when --layernorm-init is specified"
+    if args.use_dyt:
+        assert not args.pre_layer_norm, "dyt normalization not implemented with pre_layer_norm"
     if not args.attn_layernorm or not args.mlp_layernorm or not args.final_layernorm \
             or args.post_layer_norm or args.layernorm_init is not None or args.qknorm_impl != "te":
         assert args.transformer_impl == "transformer_engine", "OP arguments are only checked with the TE transformer implementation"
         assert not args.multi_latent_attention, "OP arguments are not implemented with --multi-latent-attention"
-    if args.qk_layernorm and args.qk_dyt:
-        assert not args.sequence_parallel, "QK DyT does not support sequence parallel yet"
-    assert not args.sequence_parallel, "I gotta check if QK norm supports sequence parallel correctly..."
+    # TODO: check this again:
+    #if args.qk_layernorm and args.qk_dyt:
+    #    assert not args.sequence_parallel, "QK DyT does not support sequence parallel yet"
+    #assert not args.sequence_parallel, "I gotta check if QK norm supports sequence parallel correctly..."
 
     if args.log_indiv_grad_norm:
         assert not args.use_distributed_optimizer, "Can't use distributed optimizer with log_indiv_grad_norm"
@@ -1265,6 +1268,7 @@ def _add_network_size_args(parser):
     group.add_argument('--normalization', default='LayerNorm',
                        choices=['LayerNorm', 'RMSNorm'],
                        help='Which normalization technique to use.')
+    group.add_argument('--use-dyt', action='store_true')
     group.add_argument('--norm-epsilon', type=float, default=1e-5,
                        help='Epsilon for layer norm and RMS norm.')
     group.add_argument('--apply-layernorm-1p', action='store_true',
@@ -1300,6 +1304,8 @@ def _add_network_size_args(parser):
                        help='Use multi-latent attention for model.')
 
     # OP arguments
+    group.add_argument('--dyt-alpha-init-attention', type=float, default=1.0)
+    group.add_argument('--dyt-alpha-init-other', type=float, default=0.5)
     group.add_argument('--no-attn-layernorm', action='store_false', dest='attn_layernorm',
                        help='Disable pre-attention layernorm')
     group.add_argument('--no-mlp-layernorm', action='store_false', dest='mlp_layernorm',

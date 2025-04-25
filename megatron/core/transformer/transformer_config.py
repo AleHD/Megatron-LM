@@ -141,8 +141,15 @@ class TransformerConfig(ModelParallelConfig):
 
     qknorm_init: Optional[float] = None
 
+    qknorm_impl: str = "te"
+    no_train_qk_gains: bool = False
+    qk_dyt: bool = False
+
+    use_dyt: bool = False
     dyt_bias: bool = False
     dyt_alpha_init: float = 1.0
+    dyt_alpha_init_attention: float = 1.0
+    dyt_alpha_init_other: float = 0.5
 
     mlp_alpha: Optional[float] = None
 

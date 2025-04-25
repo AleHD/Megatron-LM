@@ -1327,6 +1327,8 @@ def _add_network_size_args(parser):
     group.add_argument("--qknorm-init", default=None, type=float,
                        help="Q and K layernorm gain initialization value")
     group.add_argument("--mlp-alpha", default=None, type=float)
+
+    group.add_argument("--scaled-swiglu", action="store_true")
     return parser
 
 

@@ -79,7 +79,7 @@ usage () {
 	echo " --layerscale-value <float>: Layerscale init value."
 	echo " --input-upscale: Upscales input by 1/std."
 	echo " --alpha: MLP alpha."
-	echo " --activation (default=$ACTIVATION): MLP activation. Choices=[swiglu, gelu, xielu]."
+	echo " --activation (default=$ACTIVATION): MLP activation. Choices=[swiglu, gelu, xielu, sswiglu]."
 	# Opt settings.
 	echo " --decay-qkgains: Decay qk layernorm gains"
 	echo " --no-train-qk-gains: Don't train QK layernorm gains"
@@ -142,13 +142,13 @@ elif [[ $1 -eq 8 ]]; then
 	# batch_size: ~1.1M.
 	# tok/sec/gpu: ~8.5k (16nodes, bf16).
 	# 250B ETA: 5d
-	TP=1
+	TP=4  # TODO change to 1
 	LAYERS=32
 	HIDDEN_SIZE=4096
 	FFN_SIZE=14336
 	NUM_HEADS=32
 	NUM_QUERY_GROUPS=8
-	MBS=1
+	MBS=4  # TODO: change to 1
 	GBS=512
 	ITERS=500  # 1BT.
 	LR=0.0005  # TODO: Previously baseline lr=0.00005, OP lr=0.0003.
@@ -392,17 +392,23 @@ if [[ $INPUT_UPSCALE = true ]]; then
 	ARCH_ARGS+=(--input-embeddings-multiplier $MULT)
 fi
 
-if [[ $ACTIVATION != swiglu ]] && [[ $ACTIVATION != gelu ]] && [[ $ACTIVATION != xielu ]]; then
+if [[ $ACTIVATION = gelu ]]; then
+	FFN_SIZE=$((3*$FFN_SIZE/2))
+	SUFFIX=$SUFFIX-$ACTIVATION
+elif [[ $ACTIVATION = xielu ]]; then
+	FFN_SIZE=$((3*$FFN_SIZE/2))
+	SUFFIX=$SUFFIX-$ACTIVATION
+	ARCH_ARGS+=(--$ACTIVATION)
+elif [[ $ACTIVATION = sswiglu ]]; then
+	SUFFIX=$SUFFIX-sswiglu
+	ARCH_ARGS+=(--scaled-swiglu --swiglu)
+elif [[ $ACTIVATION = swiglu ]]; then
+	ARCH_ARGS+=(--swiglu)
+else
 	>&2 echo Unknown activation: $ACTIVATION
 	exit 1
 fi
-if [[ $ACTIVATION != swiglu ]]; then
-	SUFFIX=$SUFFIX-$ACTIVATION
-	FFN_SIZE=$((3*$FFN_SIZE/2))
-fi
-if [[ $ACTIVATION != gelu ]]; then
-	ARCH_ARGS+=(--$ACTIVATION)
-fi
+
 if [[ ! -z ${ALPHA+x} ]]; then
 	SUFFIX=$SUFFIX-mlp$ALPHA
 	ARCH_ARGS+=(--mlp-alpha $ALPHA)

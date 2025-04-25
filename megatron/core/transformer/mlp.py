@@ -16,6 +16,7 @@ from megatron.core.dist_checkpointing.mapping import (
 from megatron.core.fusions.fused_bias_geglu import bias_geglu_impl
 from megatron.core.fusions.fused_bias_gelu import bias_gelu_impl
 from megatron.core.fusions.fused_bias_swiglu import bias_swiglu_impl
+from megatron.core.fusions.fused_scaled_swiglu import scaled_swiglu
 from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.transformer.transformer_config import TransformerConfig
@@ -126,6 +127,8 @@ class MLP(MegatronModule):
                 else:
                     assert self.config.add_bias_linear is True
                     intermediate_parallel = bias_gelu_impl(intermediate_parallel, bias_parallel)
+            elif self.activation_func == F.silu and self.config.gated_linear_unit and self.config.scaled_swiglu:
+                intermediate_parallel, scaling = scaled_swiglu(intermediate_parallel)
             elif self.activation_func == F.silu and self.config.gated_linear_unit:
                 intermediate_parallel = bias_swiglu_impl(
                     intermediate_parallel,
@@ -143,12 +146,24 @@ class MLP(MegatronModule):
                     x = torch.chunk(x, 2, dim=-1)
                     return self.config.activation_func(x[0]) * x[1]
 
-                intermediate_parallel = glu(intermediate_parallel)
+                def scaled_glu(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+                    y_1, y_2 = torch.chunk(y, 2, dim=-1)
+                    s = y_1.detach().abs().max(dim=-1, keepdim=True)[0]
+                    tmp = y_2/s
+                    return self.config.activation_func(y_1)*tmp, s
+
+                scaling = None
+                if self.config.scaled_swiglu:
+                    intermediate_parallel, scaling = scaled_glu(intermediate_parallel)
+                else:
+                    intermediate_parallel = glu(intermediate_parallel)
             else:
                 intermediate_parallel = self.activation_func(intermediate_parallel)
 
         # [s, b, h]
         output, output_bias = self.linear_fc2(intermediate_parallel)
+        if self.config.scaled_swiglu:
+            output = output*scaling
 
         tracker.update(output, "mlp_out", self.layer_number - 1)
 

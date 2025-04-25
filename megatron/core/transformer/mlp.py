@@ -20,8 +20,10 @@ from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.training.activations import XIELU, XIPReLU, XIPReLUP
+from megatron.core.metrics_tracking import get_tracker
 
 
+# pylint: disable=missing-class-docstring
 @dataclass
 class MLPSubmodules:
     linear_fc1: Union[ModuleSpec, type] = None
@@ -57,10 +59,16 @@ class MLP(MegatronModule):
         self.config: TransformerConfig = config
 
         self.input_size = input_size if input_size != None else self.config.hidden_size
+        self.layer_number = None
 
         # If this is a gated linear unit we double the output width
         # see https://arxiv.org/pdf/2002.05202.pdf
-        ffn_hidden_size = self.config.ffn_hidden_size
+        if is_expert and self.config.moe_ffn_hidden_size != None:
+            # Experts read ffn_hidden_size from config.moe_ffn_hidden_size
+            ffn_hidden_size = self.config.moe_ffn_hidden_size
+        else:
+            # Normal MLPs read ffn_hidden_size from config.ffn_hidden_size
+            ffn_hidden_size = self.config.ffn_hidden_size
         if self.config.gated_linear_unit:
             ffn_hidden_size *= 2
 
@@ -102,7 +110,14 @@ class MLP(MegatronModule):
     def forward(self, hidden_states):
         """Perform the forward pass through the MLP block."""
         # [s, b, 4 * h/p]
+
+        if self.config.mlp_alpha is not None:
+            hidden_states = self.config.mlp_alpha*hidden_states
+
         intermediate_parallel, bias_parallel = self.linear_fc1(hidden_states)
+
+        tracker = get_tracker()
+        tracker.update(intermediate_parallel, "mlp_intermediate", self.layer_number - 1)
 
         if self.config.bias_activation_fusion:
             if self.activation_func == F.gelu:
@@ -135,8 +150,11 @@ class MLP(MegatronModule):
         # [s, b, h]
         output, output_bias = self.linear_fc2(intermediate_parallel)
 
+        tracker.update(output, "mlp_out", self.layer_number - 1)
+
         return output, output_bias
 
+    # pylint: disable=missing-function-docstring
     def sharded_state_dict(
         self, prefix: str = '', sharded_offsets: tuple = (), metadata: Optional[dict] = None
     ) -> ShardedStateDict:
@@ -144,14 +162,20 @@ class MLP(MegatronModule):
         for name, module in self._modules.items():
             sub_sd = module.sharded_state_dict(f'{prefix}{name}.', sharded_offsets, metadata)
             if self.config.gated_linear_unit and name == 'linear_fc1':
-                assert f'{prefix}{name}.weight' in sub_sd, sub_sd.keys()
+                # NOTE: In custom FSDP, we can have no weight in local.
+                if not self.config.use_custom_fsdp:
+                    assert f'{prefix}{name}.weight' in sub_sd, sub_sd.keys()
                 for k, v in sub_sd.items():
                     if k in (f'{prefix}{name}.weight', f'{prefix}{name}.bias'):
                         sub_sd[k] = apply_swiglu_sharded_factory(v, sharded_offsets)
             sharded_state_dict.update(sub_sd)
         return sharded_state_dict
 
+    def set_layer_number(self, layer_number: int):
+        self.layer_number = layer_number
 
+
+# pylint: disable=missing-function-docstring
 def apply_swiglu_sharded_factory(original_sh_ten, sharded_offsets):
     # We must split the tensor into 2 parts, each sharded separately.
     # This requires a ShardedTensorFactory which `chunk`s during saving
@@ -266,4 +290,5 @@ def apply_swiglu_sharded_factory(original_sh_ten, sharded_offsets):
         sh_ten_build_fn,
         sh_ten_merge_fn,
         original_sh_ten.replica_id,
+        flattened_range=original_sh_ten.flattened_range,
     )

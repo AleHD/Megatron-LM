@@ -1,14 +1,16 @@
 # Copyright (c) 2023, NVIDIA CORPORATION. All rights reserved.
 
+import warnings
 from collections import OrderedDict
 from typing import Dict, Literal, Optional
 
 import torch
 from torch import Tensor
 
-from megatron.core import InferenceParams, tensor_parallel
+from megatron.core import tensor_parallel
 from megatron.core.config_logger import has_config_logger_enabled, log_config_to_disk
 from megatron.core.dist_checkpointing.mapping import ShardedStateDict
+from megatron.core.inference.contexts import BaseInferenceContext
 from megatron.core.models.common.embeddings.language_model_embedding import LanguageModelEmbedding
 from megatron.core.models.common.embeddings.rotary_pos_embedding import RotaryEmbedding
 from megatron.core.models.common.language_module.language_module import LanguageModule
@@ -17,7 +19,9 @@ from megatron.core.transformer.enums import ModelType
 from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_block import TransformerBlock
 from megatron.core.transformer.transformer_config import TransformerConfig
-
+from megatron.core.utils import deprecate_inference_params
+from megatron.core.extensions.transformer_engine import TEColumnParallelLinear
+from megatron.core.fp8_utils import get_fp8_context
 
 class GPTModel(LanguageModule):
     """GPT Transformer language model.
@@ -80,6 +84,7 @@ class GPTModel(LanguageModule):
         scatter_embedding_sequence_parallel: bool = True,
         seq_len_interpolation_factor: Optional[float] = None,
         final_layernorm: bool = True,
+        input_embeddings_multiplier: float = 1.0,
     ) -> None:
         super().__init__(config=config)
 
@@ -96,6 +101,7 @@ class GPTModel(LanguageModule):
         self.share_embeddings_and_output_weights = share_embeddings_and_output_weights
         self.position_embedding_type = position_embedding_type
         self.final_layernorm = final_layernorm
+        self.input_embeddings_multiplier = input_embeddings_multiplier
 
         # megatron core pipelining currently depends on model type
         # TODO: remove this dependency ?
@@ -157,19 +163,34 @@ class GPTModel(LanguageModule):
                 self.embedding_activation_buffer = None
                 self.grad_output_buffer = None
 
-            self.output_layer = tensor_parallel.ColumnParallelLinear(
-                config.hidden_size,
-                self.vocab_size,
-                config=config,
-                init_method=config.init_method,
-                bias=False,
-                skip_bias_add=False,
-                gather_output=not self.parallel_output,
-                skip_weight_param_allocation=self.pre_process
-                and self.share_embeddings_and_output_weights,
-                embedding_activation_buffer=self.embedding_activation_buffer,
-                grad_output_buffer=self.grad_output_buffer,
-            )
+            # lm_head in fp8 if 1) asked for   AND   2) no tied embeddings 
+            # lm-head-in-fp8 is overriden to False in `arguments.py` if lm-head is tied to embeddings.
+            if self.config.lm_head_in_fp8:
+                self.output_layer = TEColumnParallelLinear(
+                    config.hidden_size,
+                    self.vocab_size,
+                    config=config,
+                    init_method=config.init_method,
+                    gather_output=not self.parallel_output,
+                    bias=False,
+                    skip_bias_add=False,
+                    is_expert=False,
+                    skip_weight_param_allocation=False,
+                )
+            else:
+                self.output_layer = tensor_parallel.ColumnParallelLinear(
+                    config.hidden_size,
+                    self.vocab_size,
+                    config=config,
+                    init_method=config.init_method,
+                    bias=False,
+                    skip_bias_add=False,
+                    gather_output=not self.parallel_output,
+                    skip_weight_param_allocation=self.pre_process
+                    and self.share_embeddings_and_output_weights,
+                    embedding_activation_buffer=self.embedding_activation_buffer,
+                    grad_output_buffer=self.grad_output_buffer,
+                )
 
         if self.pre_process or self.post_process:
             self.setup_embeddings_and_output_layer()
@@ -202,10 +223,12 @@ class GPTModel(LanguageModule):
         attention_mask: Tensor,
         decoder_input: Tensor = None,
         labels: Tensor = None,
-        inference_params: InferenceParams = None,
+        inference_context: BaseInferenceContext = None,
         packed_seq_params: PackedSeqParams = None,
         extra_block_kwargs: dict = None,
         runtime_gather_output: Optional[bool] = None,
+        *,
+        inference_params: Optional[BaseInferenceContext] = None,
     ) -> Tensor:
         """Forward function of the GPT Model This function passes the input tensors
         through the embedding layer, and then the decoeder and finally into the post
@@ -220,11 +243,15 @@ class GPTModel(LanguageModule):
         # If decoder_input is provided (not None), then input_ids and position_ids are ignored.
         # Otherwise, apply embedding layer on input_ids and position_ids to get decoder_input.
 
+        inference_context = deprecate_inference_params(inference_context, inference_params)
+
         # Decoder embedding.
         if decoder_input is not None:
             pass
         elif self.pre_process:
             decoder_input = self.embedding(input_ids=input_ids, position_ids=position_ids)
+            if self.input_embeddings_multiplier != 1.0:
+                decoder_input = decoder_input*self.input_embeddings_multiplier
         else:
             # intermediate stage of pipeline
             # decoder will get hidden_states from encoder.input_tensor
@@ -235,15 +262,18 @@ class GPTModel(LanguageModule):
         rotary_pos_cos = None
         rotary_pos_sin = None
         if self.position_embedding_type == 'rope' and not self.config.multi_latent_attention:
-            if not self.training and self.config.flash_decode and inference_params:
+            if not self.training and self.config.flash_decode and inference_context:
+                assert (
+                    inference_context.is_static_batching()
+                ), "GPTModel currently only supports static inference batching."
                 # Flash decoding uses precomputed cos and sin for RoPE
                 rotary_pos_cos, rotary_pos_sin = self.rotary_pos_emb_cache.setdefault(
-                    inference_params.max_sequence_length,
-                    self.rotary_pos_emb.get_cos_sin(inference_params.max_sequence_length),
+                    inference_context.max_sequence_length,
+                    self.rotary_pos_emb.get_cos_sin(inference_context.max_sequence_length),
                 )
             else:
                 rotary_seq_len = self.rotary_pos_emb.get_rotary_seq_len(
-                    inference_params, self.decoder, decoder_input, self.config, packed_seq_params
+                    inference_context, self.decoder, decoder_input, self.config, packed_seq_params
                 )
                 rotary_pos_emb = self.rotary_pos_emb(
                     rotary_seq_len,
@@ -253,10 +283,12 @@ class GPTModel(LanguageModule):
         if (
             (self.config.enable_cuda_graph or self.config.flash_decode)
             and rotary_pos_cos is not None
-            and inference_params
+            and inference_context
+            and inference_context.is_static_batching()
+            and not self.training
         ):
             sequence_len_offset = torch.tensor(
-                [inference_params.sequence_len_offset] * inference_params.current_batch_size,
+                [inference_context.sequence_len_offset] * inference_context.current_batch_size,
                 dtype=torch.int32,
                 device=rotary_pos_cos.device,  # Co-locate this with the rotary tensors
             )
@@ -267,7 +299,7 @@ class GPTModel(LanguageModule):
         hidden_states = self.decoder(
             hidden_states=decoder_input,
             attention_mask=attention_mask,
-            inference_params=inference_params,
+            inference_context=inference_context,
             rotary_pos_emb=rotary_pos_emb,
             rotary_pos_cos=rotary_pos_cos,
             rotary_pos_sin=rotary_pos_sin,
@@ -276,6 +308,12 @@ class GPTModel(LanguageModule):
             **(extra_block_kwargs or {}),
         )
 
+        # Process inference output.
+        if inference_context and not inference_context.is_static_batching():
+            hidden_states = inference_context.last_token_logits(
+                hidden_states.squeeze(1).unsqueeze(0)
+            ).unsqueeze(1)
+
         if not self.post_process:
             return hidden_states
 
@@ -283,9 +321,21 @@ class GPTModel(LanguageModule):
         output_weight = None
         if self.share_embeddings_and_output_weights:
             output_weight = self.shared_embedding_or_output_weight()
-        logits, _ = self.output_layer(
-            hidden_states, weight=output_weight, runtime_gather_output=runtime_gather_output
-        )
+        if (
+            not self.training
+            and inference_context is not None
+            and inference_context.is_static_batching()
+            and inference_context.materialize_only_last_token_logits
+        ):
+            hidden_states = hidden_states[-1:, :, :]
+        
+        if self.config.lm_head_in_fp8:
+            with get_fp8_context(self.config):  # needs to be tested
+                logits, _ = self.output_layer(hidden_states)
+        else:
+            logits, _ = self.output_layer(
+                hidden_states, weight=output_weight, runtime_gather_output=runtime_gather_output
+            )
 
         if has_config_logger_enabled(self.config):
             payload = OrderedDict(

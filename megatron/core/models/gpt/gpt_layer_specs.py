@@ -9,9 +9,11 @@ from megatron.core.tensor_parallel.layers import ColumnParallelLinear, RowParall
 from megatron.core.transformer.attention import SelfAttention, SelfAttentionSubmodules
 from megatron.core.transformer.torch_norm import WrappedTorchNorm
 from megatron.core.transformer.dot_product_attention import DotProductAttention
+from megatron.core.transformer.layer_scale import LayerScale
 from megatron.core.transformer.enums import AttnMaskType
 from megatron.core.transformer.identity_op import IdentityOp
 from megatron.core.transformer.mlp import MLP, MLPSubmodules
+from megatron.core.transformer.dynamic_tanh import DynamicTanh
 from megatron.core.transformer.multi_latent_attention import (
     MLASelfAttention,
     MLASelfAttentionSubmodules,
@@ -34,7 +36,6 @@ try:
         TEColumnParallelLinear,
         TEDotProductAttention,
         TELayerNormColumnParallelLinear,
-        TELinear,
         TENorm,
         TERowParallelLinear,
     )
@@ -42,6 +43,8 @@ try:
     HAVE_TE = True
 except ImportError:
     HAVE_TE = False
+
+from megatron.core.transformer.torch_norm import WrappedTorchNorm
 
 try:
     import apex  # pylint: disable=unused-import
@@ -51,6 +54,8 @@ try:
     HAVE_APEX = True
     LNImpl = FusedApexNorm
 except ImportError:
+    import warnings
+
     from megatron.core.transformer.torch_norm import WrappedTorchNorm
 
     warnings.warn('Apex is not installed. Falling back to Torch Norm')
@@ -67,7 +72,10 @@ def get_gpt_layer_with_transformer_engine_spec(
     mlp_layernorm: bool = True,
     qknorm_impl: str = 'te',
     post_layer_norm: bool = False,
+    pre_layer_norm: bool = False,
     moe_use_legacy_grouped_gemm: Optional[bool] = False,
+    layer_scale: Optional[float] = None,
+    qk_dyt: bool = False,
 ) -> ModuleSpec:
     """Use this spec to use lower-level Transformer Engine modules (required for fp8 training).
 
@@ -95,7 +103,8 @@ def get_gpt_layer_with_transformer_engine_spec(
         moe_grouped_gemm=moe_grouped_gemm,
         moe_use_legacy_grouped_gemm=moe_use_legacy_grouped_gemm,
         mlp_layernorm=mlp_layernorm, 
-        post_layer_norm=post_layer_norm
+        post_layer_norm=post_layer_norm,
+        pre_layer_norm=pre_layer_norm,
     )
 
     if multi_latent_attention:
@@ -108,13 +117,13 @@ def get_gpt_layer_with_transformer_engine_spec(
                     params={"attn_mask_type": AttnMaskType.causal},
                     submodules=MLASelfAttentionSubmodules(
                         linear_q_proj=TEColumnParallelLinear,
-                        linear_q_down_proj=TELinear,
+                        linear_q_down_proj=TEColumnParallelLinear,
                         linear_q_up_proj=(
                             TELayerNormColumnParallelLinear
                             if qk_layernorm
                             else TEColumnParallelLinear
                         ),
-                        linear_kv_down_proj=TELinear,
+                        linear_kv_down_proj=TEColumnParallelLinear,
                         linear_kv_up_proj=(
                             TELayerNormColumnParallelLinear
                             if qk_layernorm
@@ -137,7 +146,9 @@ def get_gpt_layer_with_transformer_engine_spec(
         # TENorm significantly harms convergence when used
         # for QKLayerNorm if TE Version < 1.9;
         # we instead use the Apex implementation.
-        if qknorm_impl == "te":
+        if qk_dyt:
+            qk_norm = DynamicTanh
+        elif qknorm_impl == "te":
             qk_norm = TENorm if is_te_min_version("1.9.0") else FusedApexNorm
         elif qknorm_impl == "apex":
             qk_norm = FusedApexNorm
@@ -146,25 +157,6 @@ def get_gpt_layer_with_transformer_engine_spec(
         else:
             raise KeyError(f"Unknown qknorm_impl {qknorm_impl}")
 
-        # Determine where to handle attention layernorm.
-        if attn_layernorm and post_layer_norm: # Post-layer normalization case: input_layernorm module will be used.
-            linear_qkv = TEColumnParallelLinear
-            input_layernorm = TENorm
-        elif attn_layernorm:  # standard pre-norm case: TELayerNormColumnParallelLinear handles it.
-            linear_qkv = TELayerNormColumnParallelLinear
-            input_layernorm = IdentityOp
-        else:  # no layernorms at all.
-            linear_qkv = TEColumnParallelLinear
-            input_layernorm = IdentityOp
-
-        # Determine how to handle mlp norm.
-        if mlp_layernorm and post_layer_norm:
-            pre_mlp_layernorm = TENorm
-        else:
-            # even when mlp_layernorm but not post_layer_norm, we have the identity op
-            # because mlp.fc1 will fuse the layernorm :)
-            pre_mlp_layernorm = IdentityOp
-
         return ModuleSpec(
             module=TransformerLayer,
             submodules=TransformerLayerSubmodules(
@@ -172,18 +164,22 @@ def get_gpt_layer_with_transformer_engine_spec(
                     module=SelfAttention,
                     params={"attn_mask_type": AttnMaskType.causal},
                     submodules=SelfAttentionSubmodules(
-                        linear_qkv=linear_qkv,
+                        linear_qkv=TELayerNormColumnParallelLinear if attn_layernorm and pre_layer_norm else TEColumnParallelLinear,
                         core_attention=TEDotProductAttention,
                         linear_proj=TERowParallelLinear,
                         q_layernorm=qk_norm if qk_layernorm else IdentityOp,
                         k_layernorm=qk_norm if qk_layernorm else IdentityOp,
                     ),
                 ),
-                input_layernorm=input_layernorm,
+                input_layernorm=IdentityOp,
+                pre_mlp_layernorm=IdentityOp, 
                 self_attn_bda=get_bias_dropout_add,
-                pre_mlp_layernorm=pre_mlp_layernorm,
                 mlp=mlp,
                 mlp_bda=get_bias_dropout_add,
+                attention_layerscale=IdentityOp if layer_scale is None else LayerScale,
+                post_attention_layernorm=TENorm if attn_layernorm and post_layer_norm else IdentityOp,
+                mlp_layerscale=IdentityOp if layer_scale is None else LayerScale,
+                post_mlp_layernorm=TENorm if mlp_layernorm and post_layer_norm else IdentityOp,
             ),
         )
 
@@ -195,6 +191,7 @@ def get_gpt_layer_local_spec(
     multi_latent_attention: Optional[bool] = False,
     fp8: Optional[str] = None,  # pylint: disable=unused-arguments
     moe_use_legacy_grouped_gemm: Optional[bool] = False,
+    normalization: Optional[str] = None,
 ) -> ModuleSpec:
     """Use this spec for an implementation using only modules in Megatron-Core.
 
@@ -210,6 +207,12 @@ def get_gpt_layer_local_spec(
     Returns:
         ModuleSpec: Module specification with Megatron-Core modules
     """
+
+    # Adjust for RMS norm.
+    if normalization == "RMSNorm":
+        global LNImpl
+        LNImpl = WrappedTorchNorm
+
     if fp8 is not None:
         warnings.warn(
             'The fp8 argument in "get_gpt_layer_local_spec" has been deprecated'
@@ -304,6 +307,7 @@ def get_mlp_module_spec(
     moe_grouped_gemm: Optional[bool] = False,
     mlp_layernorm: bool = True,
     post_layer_norm: bool = False,
+    pre_layer_norm: bool = False,
     fp8: Optional[str] = None,  # pylint: disable=unused-arguments
     moe_use_legacy_grouped_gemm: Optional[bool] = False,
 ) -> ModuleSpec:
@@ -315,7 +319,7 @@ def get_mlp_module_spec(
         )
 
     if use_te:
-        if mlp_layernorm and not post_layer_norm:
+        if mlp_layernorm and pre_layer_norm:
             fc1 = TELayerNormColumnParallelLinear
         else:
             fc1 = TEColumnParallelLinear
@@ -342,7 +346,7 @@ def get_mlp_module_spec(
 
 
 def get_gpt_decoder_block_spec(
-    config: TransformerConfig, use_transformer_engine: bool
+    config: TransformerConfig, use_transformer_engine: bool, normalization: Optional[str] = None
 ) -> TransformerBlockSubmodules:
     """GPT block spec."""
     if use_transformer_engine:
@@ -366,6 +370,7 @@ def get_gpt_decoder_block_spec(
             qk_layernorm=config.qk_layernorm,
             multi_latent_attention=config.multi_latent_attention,
             moe_use_legacy_grouped_gemm=config.moe_use_legacy_grouped_gemm,
+            normalization=normalization,
         )
     )
     moe_layer_spec = (
@@ -383,6 +388,7 @@ def get_gpt_decoder_block_spec(
             qk_layernorm=config.qk_layernorm,
             multi_latent_attention=config.multi_latent_attention,
             moe_use_legacy_grouped_gemm=config.moe_use_legacy_grouped_gemm,
+            normalization=normalization,
         )
     )
 

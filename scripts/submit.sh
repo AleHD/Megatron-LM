@@ -56,8 +56,8 @@ usage () {
 	# Precision aware optimizer.
 	echo " --dtype-grad <fp32/bf16> (default=$DEF_GRAD_DTYPE): Main gradient dtype"
 	echo " --dtype-param <fp32/fp16> (default=$DEF_PARAM_DTYPE): Main parameter dtype"
-	echo " --dtype-m1 <fp32/bf16/fp8> (default=$DEF_M1_DTYPE): Optimizer first moment dtype"
-	echo " --dtype-m2 <fp32/bf16/fp8> (default=$DEF_M2_DTYPE): Optimizer second moment dtype"
+	echo " --dtype-m1 <fp32/fp16/fp8> (default=$DEF_M1_DTYPE): Optimizer first moment dtype"
+	echo " --dtype-m2 <fp32/fp16/fp8> (default=$DEF_M2_DTYPE): Optimizer second moment dtype"
 	# Training settings..
 	echo " --tokens <int> ): Amount of tokens to train with (in B)."
 	echo " --lr <float>: Learning rate."
@@ -151,7 +151,7 @@ elif [[ $1 -eq 8 ]]; then
 	MBS=4  # TODO: change to 1
 	GBS=512
 	ITERS=500  # 1BT.
-	LR=0.0005  # TODO: Previously baseline lr=0.00005, OP lr=0.0003.
+	LR=0.0003  # TODO: Previously baseline lr=0.00005, OP lr=0.0003.
 	INIT_STD=0.02  # TODO: Most likely OP will need larger.
 	SIZE=8B
 	SAVE_FREQ=2500
@@ -313,7 +313,7 @@ fi
 
 if [[ $GRAD_DTYPE != $DEF_GRAD_DTYPE ]] || [[ $PARAM_DTYPE != $DEF_PARAM_DTYPE ]] || [[ $M1_DTYPE != $DEF_M1_DTYPE ]] || [[ $M2_DTYPE != $DEF_M2_DTYPE ]]; then
 	SUFFIX=$SUFFIX-dtypeG${GRAD_DTYPE}P${PARAM_DTYPE}M1${M1_DTYPE}M2${M2_DTYPE}
-	FP8_ARGS+=(--use-precision-aware-optimizer --main-grads-dtype $DEF_GRAD_DTYPE --main-params-dtype $DEF_PARAM_DTYPE --exp-avg-dtype $M1_DTYPE --exp-avg-sq-dtype $M2_DTYPE)
+	FP8_ARGS+=(--use-precision-aware-optimizer --main-grads-dtype $GRAD_DTYPE --main-params-dtype $PARAM_DTYPE --exp-avg-dtype $M1_DTYPE --exp-avg-sq-dtype $M2_DTYPE)
 fi
 
 ARCH_ARGS=()

@@ -8,9 +8,9 @@ from torch.optim import SGD as CPUSGD
 from torch.optim import AdamW as CPUAdam
 
 try:
-    from transformer_engine.pytorch.optimizers import FusedAdam as Adam
+    from megatron.core.optimizer.fused_adam import Adam
     from transformer_engine.pytorch.optimizers import FusedSGD as SGD
-except ImportError:
+except ImportError as ex:
     try:
         from apex.optimizers import FusedAdam as Adam
         from apex.optimizers import FusedSGD as SGD

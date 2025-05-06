@@ -253,8 +253,11 @@ class FusedRMSNorm(torch.nn.Module):
 
     def forward(self, input: Tensor) -> Tensor:
         if self.weight is None:
-            return FusedRMSNormFunction.apply(input, self.hidden_size,
-                                              self.eps, self.config.memory_efficient_layer_norm)
+            out = FusedRMSNormFunction.apply(input, self.hidden_size,
+                                             self.eps, self.config.memory_efficient_layer_norm)
+            if self.init_value is not None and self.init_value != 1.0:
+                return out*self.init_value
+            return out
         else:
             weight = self.weight + 1 if self.zero_centered_gamma else self.weight
             return FusedRMSNormAffineFunction.apply(input, weight, self.hidden_size,

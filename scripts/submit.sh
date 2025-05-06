@@ -2,9 +2,10 @@
 # Some constants.
 SCRIPT_VERSION=v1
 SEQ_LEN=4096
-TOKENIZER=/capstor/store/cscs/swissai/a06/users/ahernnde/swissai-tokenizer/
-DATA_DIR=/capstor/store/cscs/swissai/a06/datasets_tokenized/megatron/sai/swissai-fineweb-edu-filterrobots-merge
-CODE_PATH=$STORE/users/ahernnde/workspace/AleHD-Megatron-LM
+TOKENIZER=/capstor/store/cscs/swissai/a06/users/ahernnde/swissai-tokenizer
+#DATA_DIR=/capstor/store/cscs/swissai/a06/datasets_tokenized/megatron/sai/swissai-fineweb-edu-filterrobots-merge
+DATA_DIR=/iopsstor/scratch/cscs/ahernnde/data/swissai-fineweb-edu-filterrobots-merge/
+CODE_PATH=/capstor/store/cscs/swissai/a06/users/ahernnde/workspace/AleHD-Megatron-LM
 
 
 ACTIVATION=swiglu
@@ -59,12 +60,13 @@ usage () {
 	echo " --dtype-m1 <fp32/fp16/fp8> (default=$DEF_M1_DTYPE): Optimizer first moment dtype"
 	echo " --dtype-m2 <fp32/fp16/fp8> (default=$DEF_M2_DTYPE): Optimizer second moment dtype"
 	# Training settings..
-	echo " --tokens <int> ): Amount of tokens to train with (in B)."
+	echo " --tokens <int>: Amount of tokens to train with (in B)."
 	echo " --lr <float>: Learning rate."
 	echo " --cooldown-wd: When set weight decay will be cooldown."
 	# Architecture settings.
 	echo " --init <float>: Change init std."
 	echo " --no-prenorm: Disables pre-layernorm."
+	echo " --finalln: Enables final layer-norm."
 	echo " --postnorm: Enables post-layernorm."
 	echo " --use-dyt"
 	echo " --dyt-alpha-attention <float>"
@@ -103,7 +105,7 @@ if [[ $1 -eq 300 ]]; then
 	# batch_size: ~0.52M.
 	# tok/sec/gpu: ~59.5k  (4nodes, bf16).
 	# 50B ETA: ~14h30m. (4nodes, bf16).
-	# ckpt freq: ~1h30m.
+	# ckpt freq: ~1h30m. (freq=10k).
 	LAYERS=16
 	HIDDEN_SIZE=1024
 	FFN_SIZE=4096
@@ -115,15 +117,16 @@ if [[ $1 -eq 300 ]]; then
 	LR=0.001
 	INIT_STD=0.001
 	SIZE=390M
-	SAVE_FREQ=10000
+	#SAVE_FREQ=10000
+	SAVE_FREQ=2000  # TODO change back to 10000
 	DEF_TOKENS=50
 	UNTIE=false
-	INTERMEDIATE_METRICS_INTERVAL=1
+	INTERMEDIATE_METRICS_INTERVAL=10
 elif [[ $1 -eq 1 ]]; then 
 	# batch_size: ~1.05M.
 	# tok/sec/gpu: ~38.5k (8nodes, bf16).
 	# 125B ETA: ~29h (8nodes, bf16).
-	# ckpt freq: ~1h10m (8nodes, bf16).
+	# ckpt freq: ~1h10m (8nodes, bf16). (freq=5k).
 	LAYERS=16
 	HIDDEN_SIZE=2048
 	FFN_SIZE=8192
@@ -135,14 +138,15 @@ elif [[ $1 -eq 1 ]]; then
 	LR=0.0005
 	INIT_STD=0.02
 	SIZE=1.5B
-	SAVE_FREQ=5000
+	SAVE_FREQ=1500
 	DEF_TOKENS=125
 	INTERMEDIATE_METRICS_INTERVAL=100
 elif [[ $1 -eq 8 ]]; then 
 	# batch_size: ~1.1M.
 	# tok/sec/gpu: ~8.5k (16nodes, bf16).
-	# 250B ETA: 5d
-	TP=4  # TODO change to 1
+	# 125B ETA: 2d15h.
+	# ckpt freq: ~2h40m. (freq=2.5k).
+	TP=4  # TODO: change to 1
 	LAYERS=32
 	HIDDEN_SIZE=4096
 	FFN_SIZE=14336
@@ -151,12 +155,30 @@ elif [[ $1 -eq 8 ]]; then
 	MBS=4  # TODO: change to 1
 	GBS=512
 	ITERS=500  # 1BT.
-	LR=0.0003  # TODO: Previously baseline lr=0.00005, OP lr=0.0003.
+	LR=0.0003
 	INIT_STD=0.02  # TODO: Most likely OP will need larger.
 	SIZE=8B
-	SAVE_FREQ=2500
-	DEF_TOKENS=250
-	INTERMEDIATE_METRICS_INTERVAL=1000
+	SAVE_FREQ=1000
+	DEF_TOKENS=125
+	INTERMEDIATE_METRICS_INTERVAL=200
+elif [[ $1 -eq 70 ]]; then
+	TP=4
+	PP=4
+	LAYERS=80
+	HIDDEN_SIZE=8192
+	FFN_SIZE=28672
+	NUM_HEADS=64
+	NUM_QUERY_GROUPS=8
+	MBS=1
+	GBS=512
+	ITERS=500  # 1BT.
+	LR=0.00005
+	INIT_STD=0.02  # TODO: Most likely OP will need different.
+	SIZE=70B
+	SAVE_FREQ=1000
+	DEF_TOKENS=125
+	INTERMEDIATE_METRICS_INTERVAL=200
+
 else
 	>&2 echo "Invalid llama size: $1"
 	usage
@@ -226,6 +248,8 @@ while [[ $# -gt 0 ]]; do
 			COOLDOWN_WD=true; shift;;
 		--no-prenorm)
 			PRENORM=false; shift;;
+		--finalln)
+			FINALNORM=true; shift;;
 		--postnorm)
 			POSTNORM=true; shift;;
 		--use-dyt)
@@ -289,13 +313,13 @@ if [[ $FP8 = true ]]; then
 		FP8_ARGS+=(--fp8-recipe tensorwise)
 		MAYBE_INSTALL_TE="NVTE_FRAMEWORK=pytorch pip install git+https://github.com/NVIDIA/TransformerEngine.git@release_v2.2"
 	elif [[ $MARGIN -ne 0 ]]; then
-		SUFFIX=$SUFFIX-fp8margin$MARGIN
+		SUFFIX=$SUFFIX-fp8m$MARGIN
 	fi
 	if [[ $PRECISION != hybrid ]]; then
 		SUFFIX=$SUFFIX-fp8$PRECISION
 	fi
 	if [[ $FP8LEN -ne 1024 ]]; then
-		SUFFIX=$SUFFIX-fp8len$FP8LEN
+		SUFFIX=$SUFFIX-fp8l$FP8LEN
 	fi
 	if [[ $FP8_FIRST_AND_LAST -gt 0 ]]; then
 		SUFFIX=$SUFFIX-fp8safe$FP8_FIRST_AND_LAST
@@ -324,6 +348,11 @@ fi
 if [[ $PRENORM = false ]]; then
 	SUFFIX=$SUFFIX-nopre
 	ARCH_ARGS+=(--no-pre-layer-norm)
+	if [[ $FINALNORM = true ]]; then
+		SUFFIX=$SUFFIX-finalLN
+	else
+		ARCH_ARGS+=(--no-final-layernorm)
+	fi
 fi
 if [[ $POSTNORM = true ]]; then
 	SUFFIX=$SUFFIX-postln
@@ -479,7 +508,7 @@ DIFFS_PATH=$ROOT_PATH/diffs
 mkdir -p $SAVE_PATH
 mkdir -p $DIFFS_PATH
 
-if [[ $NODES -eq 1 ]] && [[ $TIME = 00:30:00 ]]; then
+if [[ $NODES -eq 1 ]] && ([[ $TIME = 00:10:00 ]] || [[ $TIME = 00:30:00 ]] || [[ $TIME = 01:30:00 ]]); then
 	PARTITION=debug
 fi
 if [[ $DEBUG = true ]]; then
@@ -555,7 +584,7 @@ DISTRIBUTED_ARGS=(
 
 DATA_ARGS=(
 	--data-path \$DATA_PATHS
-	--data-cache-path $SCRATCH/data/cache
+	--data-cache-path $SCRATCH/cache
 	--split 99,1,0
 )
 
@@ -631,7 +660,7 @@ git diff > $DIFFS_PATH/\$SLURM_JOBID.diff
 
 DATA_PATHS=\$(find $DATA_DIR -type f | sed -E 's/\.[^.]+$//' | sort -u | tr '\n' ' ')
 
-export WANDB_API_KEY=\$(cat $STORE/users/ahernnde/.keys/wandb.txt)
+export WANDB_API_KEY=\$(cat /capstor/store/cscs/swissai/a06/users/ahernnde/.keys/wandb.txt)
 export MASTER_ADDR=\$(hostname)
 
 srun -l --unbuffered numactl --membind=0-3 bash -c "
@@ -643,4 +672,5 @@ srun -l --unbuffered numactl --membind=0-3 bash -c "
 
 EOM
 echo "Saved sbatch to $ROOT_PATH/submission.sbatch"
-sbatch $ROOT_PATH/submission.sbatch
+#sbatch --exclude=nid006439,nid006441,nid006438,nid006442,nid006461,nid006444,nid006445 $ROOT_PATH/submission.sbatch
+sbatch --exclude=nid006705 $ROOT_PATH/submission.sbatch

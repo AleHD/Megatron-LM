@@ -706,7 +706,8 @@ class SelfAttention(Attention):
         )
 
         extra_qk_norm_kwargs = {}
-        if self.config.qk_layernorm and self.config.qknorm_impl in {"torch", "apex"} and self.config.no_train_qk_gains and not self.config.qk_dyt:
+        import os
+        if self.config.qk_layernorm and self.config.qknorm_impl in {"torch", "apex"} and self.config.no_train_qk_gains and not self.config.qk_dyt and os.environ.get("USE_OLD_RMS", "false") != "true":
             extra_qk_norm_kwargs["learnable"] = False
 
         if submodules.q_layernorm is not None:
@@ -809,12 +810,14 @@ class SelfAttention(Attention):
         Derives `query`, `key` and `value` tensors from `hidden_states`.
         """
         # Attention heads [sq, b, h] --> [sq, b, ng * (np/ng + 2) * hn)]
-        mixed_qkv, _ = self.linear_qkv(hidden_states)
-
         tracker = get_tracker()
         pp_rank = parallel_state.get_pipeline_model_parallel_rank()
         pp_size = parallel_state.get_pipeline_model_parallel_world_size()
         true_layer_number = self.layer_number + pp_rank*self.config.num_layers//pp_size
+        tracker.update(hidden_states, "qkv_input", true_layer_number - 1)
+
+        mixed_qkv, _ = self.linear_qkv(hidden_states)
+
         tracker.update(mixed_qkv, "qkv", true_layer_number - 1)
 
         # [sq, b, hp] --> [sq, b, ng, (np/ng + 2) * hn]

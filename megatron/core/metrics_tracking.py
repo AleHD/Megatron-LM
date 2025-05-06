@@ -9,7 +9,9 @@ class Tracker:
     expected_names = {"activation": (0, "sp"),
                       "mlp_intermediate": (1, "tp"),
                       "mlp_out": (2, "none"),
-                      "qkv": (3, "tp")}
+                      "qkv": (3, "tp"),
+                      "mlp_post_act": (4, "tp"),
+                      "qkv_input": (5, "tp")}
     _inv_expected_names = {idx: name for (name, (idx, _)) in expected_names.items()}
 
     def __init__(self, args, metrics: Optional[list[str]] = None):
@@ -69,7 +71,6 @@ class Tracker:
         assert self.gathered_final_metrics is None, "Call tracker.reset() before doing tracker.update() after an aggregation"
 
         pp_rank = parallel_state.get_pipeline_model_parallel_rank()
-
         mbs = x.size(1)
         pp_size = parallel_state.get_pipeline_model_parallel_world_size()
         x = x.transpose(0, 1).reshape(mbs, -1)

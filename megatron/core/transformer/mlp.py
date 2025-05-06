@@ -22,6 +22,7 @@ from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.training.activations import XIELU, XIPReLU, XIPReLUP
 from megatron.core.metrics_tracking import get_tracker
+from megatron.core import parallel_state
 
 
 # pylint: disable=missing-class-docstring
@@ -116,6 +117,7 @@ class MLP(MegatronModule):
             hidden_states = self.config.mlp_alpha*hidden_states
 
         intermediate_parallel, bias_parallel = self.linear_fc1(hidden_states)
+        #print(f"Scaling issue1: {intermediate_parallel.size()}")
 
         tracker = get_tracker()
         tracker.update(intermediate_parallel, "mlp_intermediate", self.layer_number - 1)
@@ -147,7 +149,7 @@ class MLP(MegatronModule):
                     return self.config.activation_func(x[0]) * x[1]
 
                 def scaled_glu(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-                    y_1, y_2 = torch.chunk(y, 2, dim=-1)
+                    y_1, y_2 = torch.chunk(x, 2, dim=-1)
                     s = y_1.detach().abs().max(dim=-1, keepdim=True)[0]
                     tmp = y_2/s
                     return self.config.activation_func(y_1)*tmp, s
@@ -161,8 +163,17 @@ class MLP(MegatronModule):
                 intermediate_parallel = self.activation_func(intermediate_parallel)
 
         # [s, b, h]
+        tracker.update(intermediate_parallel, "mlp_post_act", self.layer_number - 1)
         output, output_bias = self.linear_fc2(intermediate_parallel)
         if self.config.scaled_swiglu:
+            tp_group = parallel_state.get_tensor_model_parallel_group()
+            tp_size = torch.distributed.get_world_size(tp_group)
+            if tp_size > 1 and self.config.sequence_parallel:
+                sequence_parallel_size = output.size(0)
+                assert sequence_parallel_size*tp_size == scaling.size(0)
+                tp_rank = torch.distributed.get_rank(tp_group)
+                scaling = scaling[tp_rank*sequence_parallel_size : (tp_rank + 1)*sequence_parallel_size]
+            #print(f"Scaling issues: {hidden_states.size()} {output.size()}, {scaling.size()}, {intermediate_parallel.size()}")
             output = output*scaling
 
         tracker.update(output, "mlp_out", self.layer_number - 1)

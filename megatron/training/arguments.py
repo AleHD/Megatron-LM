@@ -307,6 +307,12 @@ def validate_args(args, defaults={}):
         else:
             setattr(args, key, defaults[key])
 
+    old_prefix = "/capstor/store/cscs/swissai/a06/datasets_tokenized/megatron/sai/"
+    new_prefix = "/iopsstor/scratch/cscs/ahernnde/data/"
+    if isinstance(args.data_path, list) and any(old_prefix in path for path in args.data_path):
+        print("Updating old data to new location")
+        args.data_path = [path.replace(old_prefix, new_prefix) for path in args.data_path]
+
     if args.data_path is not None and args.split is None:
         legacy_default_split_value = '969, 30, 1'
         if args.rank == 0:

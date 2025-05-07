@@ -1,6 +1,6 @@
 # Copyright (c) 2023, NVIDIA CORPORATION. All rights reserved.
 
-import warnings
+#import warnings
 from collections import OrderedDict
 from typing import Dict, Literal, Optional
 
@@ -330,7 +330,7 @@ class GPTModel(LanguageModule):
             hidden_states = hidden_states[-1:, :, :]
         
         if self.config.lm_head_in_fp8:
-            with get_fp8_context(self.config):  # needs to be tested
+            with get_fp8_context(self.config):
                 logits, _ = self.output_layer(hidden_states)
         else:
             logits, _ = self.output_layer(
@@ -377,8 +377,11 @@ class GPTModel(LanguageModule):
         # Old GPT checkpoints only stored the output layer weight key. So we remove the
         # _extra_state key but check that it doesn't contain any data anyway
         output_extra_state = sharded_state_dict.pop(output_layer_extra_state_key, None)
-        assert not (
-            output_extra_state and output_extra_state.data
+        #if output_extra_state:
+        #    print(f"WARNING: extra state detected and ignored: {output_layer_extra_state_key}, {output_extra_state}")
+        #    output_extra_state = None
+        assert self.config.lm_head_in_fp8 or not (
+            output_extra_state and output_extra_state.data 
         ), f'Expected output layer extra state to be empty, got: {output_extra_state}'
 
         return sharded_state_dict

@@ -192,6 +192,7 @@ def _get_block_submodules(
 
     # Transformer block submodules.
     if isinstance(spec, TransformerBlockSubmodules):
+        #print(f"Case 1")
         return spec
 
     # ModuleSpec here is generally assumed to be for a transformer layer that
@@ -199,8 +200,10 @@ def _get_block_submodules(
     # `BaseTransformerLayer` from the `transformer_layer.py` file.
     elif isinstance(spec, ModuleSpec):
         if issubclass(spec.module, TransformerBlock):
+            #print(f"Case 2")
             return spec.submodules
         elif issubclass(spec.module, BaseTransformerLayer):
+            #print(f"Case 3")
             num_layers = get_num_layers_to_build(config)
             return TransformerBlockSubmodules(
                 layer_specs=[spec] * num_layers, layer_norm=LayerNormImpl
@@ -279,13 +282,85 @@ class TransformerBlock(MegatronModule):
         # @TODO: add back account_for_embedding_in_pipeline_split (see issue #293)
         # In pipeline parallelism, we want to add this LN only to the last stage of the pipeline
         # self.post_process and self.final_layer_norm guide this behavior
+        #print(f"layernorm implementation: {self.submodules.layer_norm}")
         if self.submodules.layer_norm and self.post_process and self.final_layer_norm:
-            self.final_layernorm = build_module(
-                self.submodules.layer_norm,
-                config=self.config,
-                hidden_size=self.config.hidden_size,
-                eps=self.config.layernorm_epsilon,
-            )
+            import os
+            ln_ver = int(os.environ.get("LN_VER", "0"))
+            if ln_ver == 0:
+                self.final_layernorm = build_module(
+                    self.submodules.layer_norm,
+                    config=self.config,
+                    hidden_size=self.config.hidden_size,
+                    eps=self.config.layernorm_epsilon,
+                )
+            elif ln_ver == 1:
+                print("IMPORTANT: fLN1 - replacing final_layernorm with an Apex frozen RMSNorm initialized to 1.")
+                from megatron.core.fusions.fused_layer_norm import FusedApexNorm
+                self.final_layernorm = build_module(
+                    FusedApexNorm,
+                    config=self.config,
+                    hidden_size=self.config.hidden_size,
+                    eps=self.config.layernorm_epsilon,
+                    learnable=False
+                )
+            elif ln_ver == 2:
+                print("IMPORTANT: fLN2 - replacing final_layernorm with Apex frozen RMSNorm initialized to 2.")
+                from megatron.core.fusions.fused_layer_norm import FusedApexNorm
+                self.final_layernorm = build_module(
+                    FusedApexNorm,
+                    config=self.config,
+                    hidden_size=self.config.hidden_size,
+                    eps=self.config.layernorm_epsilon,
+                    learnable=False,
+                    init_value=2,
+                )
+            elif ln_ver == 3:
+                print("IMPORTANT: fLN3 - replacing final_layernorm with Apex learnable RMSNorm initialized to 2.")
+                from megatron.core.fusions.fused_layer_norm import FusedApexNorm
+                self.final_layernorm = build_module(
+                    FusedApexNorm,
+                    config=self.config,
+                    hidden_size=self.config.hidden_size,
+                    eps=self.config.layernorm_epsilon,
+                    learnable=True,
+                    init_value=2,
+                )
+            elif ln_ver == 4:
+                print("IMPORTANT: fLN4 - replacing final_layernorm with Apex frozen RMSNorm initialized to 4.")
+                from megatron.core.fusions.fused_layer_norm import FusedApexNorm
+                self.final_layernorm = build_module(
+                    FusedApexNorm,
+                    config=self.config,
+                    hidden_size=self.config.hidden_size,
+                    eps=self.config.layernorm_epsilon,
+                    learnable=False,
+                    init_value=4,
+                )
+            elif ln_ver == 5:
+                print("IMPORTANT: fLN5 - replacing final_layernorm with Apex frozen RMSNorm initialized to 0.25.")
+                from megatron.core.fusions.fused_layer_norm import FusedApexNorm
+                self.final_layernorm = build_module(
+                    FusedApexNorm,
+                    config=self.config,
+                    hidden_size=self.config.hidden_size,
+                    eps=self.config.layernorm_epsilon,
+                    learnable=False,
+                    init_value=0.25,
+                )
+            elif ln_ver == 6:
+                print("IMPORTANT: fLN6 - replacing final_layernorm with Apex frozen RMSNorm initialized to 0.10.")
+                from megatron.core.fusions.fused_layer_norm import FusedApexNorm
+                self.final_layernorm = build_module(
+                    FusedApexNorm,
+                    config=self.config,
+                    hidden_size=self.config.hidden_size,
+                    eps=self.config.layernorm_epsilon,
+                    learnable=False,
+                    init_value=0.10,
+                )
+            else:
+                raise ValueError(f"Unknown ln_ver: {ln_ver}")
+
         else:
             self.final_layernorm = None  # Either this or nn.Identity
 

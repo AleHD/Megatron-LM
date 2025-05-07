@@ -3,7 +3,6 @@
 SCRIPT_VERSION=v1
 SEQ_LEN=4096
 TOKENIZER=/capstor/store/cscs/swissai/a06/users/ahernnde/swissai-tokenizer
-#DATA_DIR=/capstor/store/cscs/swissai/a06/datasets_tokenized/megatron/sai/swissai-fineweb-edu-filterrobots-merge
 DATA_DIR=/iopsstor/scratch/cscs/ahernnde/data/swissai-fineweb-edu-filterrobots-merge/
 CODE_PATH=/capstor/store/cscs/swissai/a06/users/ahernnde/workspace/AleHD-Megatron-LM
 
@@ -146,13 +145,13 @@ elif [[ $1 -eq 8 ]]; then
 	# tok/sec/gpu: ~8.5k (16nodes, bf16).
 	# 125B ETA: 2d15h.
 	# ckpt freq: ~2h40m. (freq=2.5k).
-	TP=4  # TODO: change to 1
+	TP=1
 	LAYERS=32
 	HIDDEN_SIZE=4096
 	FFN_SIZE=14336
 	NUM_HEADS=32
 	NUM_QUERY_GROUPS=8
-	MBS=4  # TODO: change to 1
+	MBS=1
 	GBS=512
 	ITERS=500  # 1BT.
 	LR=0.0003
@@ -188,7 +187,8 @@ shift
 
 # Now get the general options.
 TOKENS=$DEF_TOKENS
-ENVS=""
+#ENVS=" CSCS_XIELU=true"
+ENVS="$ENVS_INIT"
 SUFFIX=""
 while [[ $# -gt 0 ]]; do
 	case $1 in
@@ -336,7 +336,11 @@ if [[ $FP8 = true ]]; then
 fi
 
 if [[ $GRAD_DTYPE != $DEF_GRAD_DTYPE ]] || [[ $PARAM_DTYPE != $DEF_PARAM_DTYPE ]] || [[ $M1_DTYPE != $DEF_M1_DTYPE ]] || [[ $M2_DTYPE != $DEF_M2_DTYPE ]]; then
-	SUFFIX=$SUFFIX-dtypeG${GRAD_DTYPE}P${PARAM_DTYPE}M1${M1_DTYPE}M2${M2_DTYPE}
+	if [[ $GRAD_DTYPE = bf16 ]] && [[ $PARAM_DTYPE = fp16 ]] && [[ $M1_DTYPE = fp8 ]] && [[ $M2_DTYPE = fp16 ]]; then
+		SUFFIX=$SUFFIX-fp8OPT
+	else
+		SUFFIX=$SUFFIX-dtypeG${GRAD_DTYPE}P${PARAM_DTYPE}M1${M1_DTYPE}M2${M2_DTYPE}
+	fi
 	FP8_ARGS+=(--use-precision-aware-optimizer --main-grads-dtype $GRAD_DTYPE --main-params-dtype $PARAM_DTYPE --exp-avg-dtype $M1_DTYPE --exp-avg-sq-dtype $M2_DTYPE)
 fi
 
@@ -425,6 +429,7 @@ if [[ $ACTIVATION = gelu ]]; then
 	FFN_SIZE=$((3*$FFN_SIZE/2))
 	SUFFIX=$SUFFIX-$ACTIVATION
 elif [[ $ACTIVATION = xielu ]]; then
+	MAYBE_INSTALL_XIELU="pip install --no-build-isolation --no-deps git+https://github.com/nickjbrowning/XIELU.git"
 	FFN_SIZE=$((3*$FFN_SIZE/2))
 	SUFFIX=$SUFFIX-$ACTIVATION
 	ARCH_ARGS+=(--$ACTIVATION)
@@ -665,6 +670,7 @@ export MASTER_ADDR=\$(hostname)
 
 srun -l --unbuffered numactl --membind=0-3 bash -c "
 	cd $CODE_PATH
+	$MAYBE_INSTALL_XIELU
 	$MAYBE_INSTALL_TE
 	export PYTHONPATH=\$PWD
 	eval \"$ENVS\" $CMD

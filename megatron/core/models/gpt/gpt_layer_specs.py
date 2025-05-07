@@ -172,6 +172,24 @@ def get_gpt_layer_with_transformer_engine_spec(
         else:
             post_mlp_layernorm = IdentityOp
 
+        import os
+        fuse_prenorm = os.environ.get("FUSE_PRENORM", "true") == "true"
+        if pre_layer_norm and attn_layernorm and fuse_prenorm:
+            linear_qkv = TELayerNormColumnParallelLinear
+            input_layernorm = IdentityOp
+        elif pre_layer_norm and attn_layernorm:
+            linear_qkv = TEColumnParallelLinear
+            input_layernorm = TENorm
+        else:
+            linear_qkv = TEColumnParallelLinear
+            input_layernorm = IdentityOp
+
+        if pre_layer_norm and mlp_layernorm and fuse_prenorm:
+            pre_mlp_layernorm = IdentityOp
+        elif pre_layer_norm and mlp_layernorm:
+            pre_mlp_layernorm = TENorm
+        else:
+            pre_mlp_layernorm = IdentityOp
 
         return ModuleSpec(
             module=TransformerLayer,
@@ -180,15 +198,18 @@ def get_gpt_layer_with_transformer_engine_spec(
                     module=SelfAttention,
                     params={"attn_mask_type": AttnMaskType.causal},
                     submodules=SelfAttentionSubmodules(
-                        linear_qkv=TELayerNormColumnParallelLinear if attn_layernorm and pre_layer_norm else TEColumnParallelLinear,
+                        #linear_qkv=TELayerNormColumnParallelLinear if attn_layernorm and pre_layer_norm else TEColumnParallelLinear,
+                        linear_qkv=linear_qkv,
                         core_attention=TEDotProductAttention,
                         linear_proj=TERowParallelLinear,
                         q_layernorm=qk_norm if qk_layernorm else IdentityOp,
                         k_layernorm=qk_norm if qk_layernorm else IdentityOp,
                     ),
                 ),
-                input_layernorm=IdentityOp,
-                pre_mlp_layernorm=IdentityOp, 
+                #input_layernorm=IdentityOp,
+                #pre_mlp_layernorm=IdentityOp, 
+                input_layernorm=input_layernorm,
+                pre_mlp_layernorm=pre_mlp_layernorm, 
                 self_attn_bda=get_bias_dropout_add,
                 mlp=mlp,
                 mlp_bda=get_bias_dropout_add,
@@ -334,8 +355,11 @@ def get_mlp_module_spec(
             ' and will be removed soon. Please update your code accordingly.'
         )
 
+
     if use_te:
-        if mlp_layernorm and pre_layer_norm:
+        import os
+        fuse_prenorm = os.environ.get("FUSE_PRENORM", "true") == "true"
+        if mlp_layernorm and pre_layer_norm and fuse_prenorm:
             fc1 = TELayerNormColumnParallelLinear
         else:
             fc1 = TEColumnParallelLinear

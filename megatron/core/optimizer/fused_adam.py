@@ -16,7 +16,7 @@ class Adam(FusedAdam):
         self.dtype_to_range_map["e5m2"] = torch.full([1], 57344.0, dtype=torch.float32)
         import os
         self.quant_eps = float(os.environ.get("QUANT_EPS", "1e-12"))
-        self.quant_kind = os.environ.get("QUANT_KIND", "adamlike")
+        self.quant_kind = os.environ.get("QUANT_KIND", "emergencyonly")
         assert self.quant_kind in {"adamlike", "emergencyonly"}
         print(f"Using quantizer epsilon of {self.quant_eps}, kind: {self.quant_kind}")
 

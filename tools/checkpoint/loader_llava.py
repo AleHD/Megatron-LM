@@ -214,10 +214,10 @@ class MegatronCheckpointLoaderLLaVA(MegatronCheckpointLoaderBase):
                 # Get non-parallel tensors from tp_rank 0
                 layer = schema.get_layer(models[0], layer_num)
 
-                message["input norm weight"] = layer["self_attn_norm_weight"]
+                message["attn norm weight"] = layer["self_attn_norm_weight"]
                 message["pre mlp norm weight"] = layer["mlp_norm_weight"]
                 if self.md.vision_norm_has_bias:
-                    message["input norm bias"] = layer["self_attn_norm_bias"]
+                    message["attn norm bias"] = layer["self_attn_norm_bias"]
                     message["pre mlp norm bias"] = layer["mlp_norm_bias"]
                 if self.md.vision_linear_bias:
                     message["dense bias"] = layer["self_attn_proj_bias"]

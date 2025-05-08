@@ -49,14 +49,14 @@ import sys
 # (for each transformer layer):
 # {
 #   "name": "transformer layer N"
-#   "input norm weight"
-#   "input norm bias"
+#   "attn norm weight"
+#   "attn norm bias"
 #   "qkv weight"
 #   "qkv bias"
 #   "dense weight"
 #   "dense bias"
-#   "post norm weight"
-#   "post norm bias"
+#   "mlp norm weight"
+#   "mlp norm bias"
 #   "mlp l0 weight"
 #   "mlp l0 bias"
 #   "mlp l1 weight"
@@ -127,7 +127,10 @@ def main():
     parser.add_argument('--no-checking', action='store_false',
                         help='Do not perform checking on the name and ordering of weights',
                         dest='checking')
-    parser.add_argument('--test-logits', action='store_true')
+    parser.add_argument('--test-logits', action='store_true',
+                        help=('If enabled, the loader will send a final "logits_check" to the loader, '
+                              'so the loader can verify the forward function of the converted model '
+                              'is equivalent. Only supported with --loader=core and (--saver=swissai_hf or --saver=swissai_fp8_hf)'))
 
     known_args, _ = parser.parse_known_args()
 
@@ -155,6 +158,8 @@ def main():
         # We need to change start method as loader process will use cuda during verification.
         # See https://github.com/pytorch/pytorch/issues/40403.
         mp.set_start_method("spawn")
+        assert args.loader == "core", "Only the core loader implements test_logits"
+        assert args.saver in ["swissai_hf", "swissai_fp8_hf"], "Only the swissai_hf and swissai_fp8_hf savers implement test_logits"
     queue = mp.Queue(maxsize=args.max_queue_size)
 
     # Start saver process.

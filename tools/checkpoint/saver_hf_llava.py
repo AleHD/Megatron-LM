@@ -144,20 +144,20 @@ def save_checkpoint(queue, args):
         if md.vision_model_type == "internvit":
             state_dict[prefix + 'ls1'] = message["ls1"] 
             state_dict[prefix + 'ls2'] = message["ls2"] 
-            state_dict[prefix + 'norm1.weight'] = message["input norm weight"]
+            state_dict[prefix + 'norm1.weight'] = message["attn norm weight"]
             state_dict[prefix + 'norm2.weight'] = message["pre mlp norm weight"]
             state_dict[prefix + 'attn.k_norm.weight'] = message["k norm weight"][:md.vision_hidden_size]
             state_dict[prefix + 'attn.q_norm.weight'] = message["q norm weight"][:md.vision_hidden_size]
             if md.vision_norm_has_bias:
-                state_dict[prefix + 'norm1.bias'] = message["input norm bias"]
+                state_dict[prefix + 'norm1.bias'] = message["attn norm bias"]
                 state_dict[prefix + 'norm2.bias'] = message["pre mlp norm bias"]
                 state_dict[prefix + 'attn.k_norm.bias'] = message["k norm bias"]
                 state_dict[prefix + 'attn.q_norm.bias'] = message["q norm bias"]
         if md.vision_model_type == "siglip":
-            state_dict[prefix + 'layer_norm1.weight'] = message["input norm weight"]
+            state_dict[prefix + 'layer_norm1.weight'] = message["attn norm weight"]
             state_dict[prefix + 'layer_norm2.weight'] = message["pre mlp norm weight"]
             if md.vision_norm_has_bias:
-                state_dict[prefix + 'layer_norm1.bias'] = message["input norm bias"]
+                state_dict[prefix + 'layer_norm1.bias'] = message["attn norm bias"]
                 state_dict[prefix + 'layer_norm2.bias'] = message["pre mlp norm bias"]
 
         if md.vision_swiglu:
@@ -230,11 +230,11 @@ def save_checkpoint(queue, args):
         message = queue_get(f"transformer layer {i}")
         prefix = f"language_model.model.layers.{i}."
 
-        state_dict[prefix + 'input_layernorm.weight'] = message["input norm weight"]
-        state_dict[prefix + 'post_attention_layernorm.weight'] = message["post norm weight"]
+        state_dict[prefix + 'input_layernorm.weight'] = message["attn norm weight"]
+        state_dict[prefix + 'post_attention_layernorm.weight'] = message["mlp norm weight"]
         if md.norm_has_bias:
-            state_dict[prefix + 'input_layernorm.bias'] = message["input norm bias"]
-            state_dict[prefix + 'post_attention_layernorm.bias'] = message["post norm bias"]
+            state_dict[prefix + 'input_layernorm.bias'] = message["attn norm bias"]
+            state_dict[prefix + 'post_attention_layernorm.bias'] = message["mlp norm bias"]
 
         if md.swiglu:
             state_dict[prefix + 'mlp.gate_proj.weight'] = message["mlp l0 weight W"]

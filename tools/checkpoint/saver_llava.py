@@ -232,10 +232,10 @@ class MegatronCheckpointSaverLLaVA(MegatronCheckpointSaverBase):
         for layer_id in range(schema.get_num_layers(self.get_local_model(pp_rank, 0, 0))):
             msg = self.queue_get(f"vit transformer layer {total_layer_num}")
 
-            input_norm_weight = msg.pop("input norm weight")
+            input_norm_weight = msg.pop("attn norm weight")
             pre_mlp_norm_weight = msg.pop("pre mlp norm weight")
             if self.md.vision_norm_has_bias:
-                input_norm_bias = msg.pop("input norm bias")
+                input_norm_bias = msg.pop("attn norm bias")
                 pre_mlp_norm_bias = msg.pop("pre mlp norm bias")
 
             # Split up the parallel tensors

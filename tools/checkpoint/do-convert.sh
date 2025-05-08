@@ -17,7 +17,7 @@ HF_SAVE_DIR=/iopsstor/scratch/cscs/$USER/Meg-Checkpoints/hf-checkpoints
 SAVE_DIR=$HF_SAVE_DIR/test2-apertus2-1b-21n
 mkdir -p $HF_SAVE_DIR
 LOADER=core
-SAVER=swissai_hf
+SAVER=swissai_fp8_hf
 
 
 # Run torch_dist --> torch

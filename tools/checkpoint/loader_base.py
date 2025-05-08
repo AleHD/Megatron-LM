@@ -281,11 +281,11 @@ class MegatronCheckpointLoaderBase:
                     layer = schema.get_layer(models[0], layer_idx)
 
                     # Non-parallel params
-                    message["input norm weight"] = layer["self_attn_norm_weight"]
-                    message["post norm weight"] = layer["mlp_norm_weight"]
+                    message["attn norm weight"] = layer["self_attn_norm_weight"]
+                    message["mlp norm weight"] = layer["mlp_norm_weight"]
                     if self.md.norm_has_bias:
-                        message["input norm bias"] = layer["self_attn_norm_bias"]
-                        message["post norm bias"] = layer["mlp_norm_bias"]
+                        message["attn norm bias"] = layer["self_attn_norm_bias"]
+                        message["mlp norm bias"] = layer["mlp_norm_bias"]
                     if self.md.linear_bias:
                         message["dense bias"] = layer["self_attn_proj_bias"]
                         message["mlp l1 bias"] = layer["mlp_fc2_bias"]

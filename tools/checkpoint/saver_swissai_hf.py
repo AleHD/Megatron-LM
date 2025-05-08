@@ -252,10 +252,10 @@ def save_checkpoint(queue: mp.Queue, args):
             message = queue_get(f"transformer layer {i_layer}")
             state_dict = {
                 f"model.layers.{i_layer}.attention_layernorm.weight": message[
-                    "input norm weight"
+                    "attn norm weight"
                 ],
                 f"model.layers.{i_layer}.feedforward_layernorm.weight": message[
-                    "post norm weight"
+                    "mlp norm weight"
                 ],
                 f"model.layers.{i_layer}.self_attn.o_proj.weight": message["dense weight"],
                 f"model.layers.{i_layer}.mlp.down_proj.weight": message["mlp l1 weight"]
@@ -422,4 +422,3 @@ def save_checkpoint(queue: mp.Queue, args):
         assert close >= threshold
 
     queue_get()  # Recv final "exit" message so saver exits gracefully.
-

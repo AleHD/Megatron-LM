@@ -295,8 +295,8 @@ def _load_checkpoint(queue, args):
 
         # Get non-parallel tensors from tp_rank 0.
         layer = model.decoder.layers[layer_idx]
-        message["input norm weight"] = layer.self_attention.linear_qkv.layer_norm_weight.data
-        message["post norm weight"] = layer.pre_mlp_layernorm.weight.data
+        message["attn norm weight"] = layer.self_attention.linear_qkv.layer_norm_weight.data
+        message["mlp norm weight"] = layer.pre_mlp_layernorm.weight.data
 
         # Simple concat of the rest.
         message["qkv weight"] = layer.self_attention.linear_qkv.weight.data

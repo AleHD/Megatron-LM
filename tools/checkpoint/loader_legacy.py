@@ -270,12 +270,12 @@ def _load_checkpoint(queue, args):
 
                 # Get non-parallel tensors from tp_rank 0
                 layer = models[0].language_model.encoder.layers[layer_num]
-                message["input norm weight"] = layer.input_norm.weight.data
+                message["attn norm weight"] = layer.input_norm.weight.data
                 if norm_has_bias:
-                    message["input norm bias"] = layer.input_norm.bias.data
-                message["post norm weight"] = layer.post_attention_norm.weight.data
+                    message["attn norm bias"] = layer.input_norm.bias.data
+                message["mlp norm weight"] = layer.post_attention_norm.weight.data
                 if norm_has_bias:
-                    message["post norm bias"] = layer.post_attention_norm.bias.data
+                    message["mlp norm bias"] = layer.post_attention_norm.bias.data
                 if md.linear_bias:
                     message["dense bias"] = layer.self_attention.dense.bias.data
                     message["mlp l1 bias"] = layer.mlp.dense_4h_to_h.bias.data

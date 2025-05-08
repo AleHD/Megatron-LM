@@ -186,7 +186,7 @@ def save_checkpoint(queue: mp.Queue, args):
             pre_norm=md.checkpoint_args.pre_layer_norm if hasattr(md.checkpoint_args, "pre_layer_norm") else False,
             post_norm=md.checkpoint_args.post_layer_norm if hasattr(md.checkpoint_args, "post_layer_norm") else False,
             input_upscale=md.checkpoint_args.input_embeddings_multiplier,
-            layerscale=md.checkpoint_args.layer_scale,   # md.checkpoint_args should have all args the model was trained with (on Megatron), including `--layer-scale`
+            layerscale=md.checkpoint_args.layer_scale is not None,   # md.checkpoint_args should have all args the model was trained with (on Megatron), including `--layer-scale`
         )
         if args.hf_tokenizer:
             llama_conf.eos_token_id = tokenizer.eos_token_id

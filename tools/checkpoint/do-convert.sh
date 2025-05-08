@@ -4,17 +4,24 @@
 #   - torch_dist           ---> torch ,  if CKPT_IS_TORCH_DIST=true.
 #   - core (torch backend) ---> HF    ,  always.
 
+if false; then
+    echo "installing custom transformers"
+    cd $SCRATCH/fp8/sai-transformers
+    pip install -e .
+    echo "-------------"
+fi
 
-MEGATRON_LM_DIR=/iopsstor/scratch/cscs/$USER/Megatron-LM
-CKPT_PATH=/iopsstor/scratch/cscs/schlag/experiments/merge-for-v2/Megatron-LM/logs/Meg-Runs/apertus2_baselines/apertus2-1b-21n-4096sl-504gbsz-ademamix-wsd-xielu-crossDocAttn-goldfish-beta2-qkNorm-untie/checkpoints
+MEGATRON_LM_DIR=$SCRATCH/fp8/Megatron-LM/
+CKPT_PATH=/capstor/store/cscs/swissai/a06/users/ahernnde/opv1-backup2/llama1.5B-nopre-postln-qknorm-softmax0.125-ls-is-xielu-ntQKgain-lr0.00025-coolWD/checkpoints/
+export PYTHONPATH=$MEGATRON_LM_DIR
 
 # [torch_dist -> torch] dependencies
 CKPT_IS_TORCH_DIST=true
 TORCH_DIST_SCRIPT=$MEGATRON_LM_DIR/scripts/conversion/torchdist_2_torch.py
-TORCH_CKPT_SAVE_PATH=/iopsstor/scratch/cscs/$USER/Meg-Checkpoints/test2-apertus2-1b-21n
+TORCH_CKPT_SAVE_PATH=$SCRATCH/fp8/Meg-Checkpoints/test-op
 # [core (torch) --> HF] dependencies
-HF_SAVE_DIR=/iopsstor/scratch/cscs/$USER/Meg-Checkpoints/hf-checkpoints
-SAVE_DIR=$HF_SAVE_DIR/test2-apertus2-1b-21n
+HF_SAVE_DIR=$SCRATCH/fp8/hf-checkpoints
+SAVE_DIR=$HF_SAVE_DIR/test-op
 mkdir -p $HF_SAVE_DIR
 LOADER=core
 SAVER=swissai_fp8_hf
@@ -36,6 +43,7 @@ fi
 
 # Run core --> HF
 echo "Running core --> HF conversion..."
+# PYTHONPATH=$MEGATRON_LM_DIR/megatron
 python $MEGATRON_LM_DIR/tools/checkpoint/convert.py \
     --model-type GPT \
     --loader  $LOADER \

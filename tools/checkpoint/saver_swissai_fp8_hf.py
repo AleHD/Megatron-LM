@@ -21,7 +21,7 @@ except ModuleNotFoundError:
     exit(1)
 
 def add_arguments(parser):
-    group = parser.add_argument_group(title="Llama HF saver.")
+    group = parser.add_argument_group(title="SwissAIFP8 HF saver.")
     group.add_argument(
         "--hf-tokenizer",
         type=str,

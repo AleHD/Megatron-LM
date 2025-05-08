@@ -415,11 +415,11 @@ class MegatronCheckpointSaverBase:
                 msg = self.queue_get(f"transformer layer {total_layer_num}")
 
                 # duplicated tensors
-                input_norm_weight = msg.pop("input norm weight")
-                post_norm_weight = msg.pop("post norm weight")
+                input_norm_weight = msg.pop("attn norm weight")
+                post_norm_weight = msg.pop("mlp norm weight")
                 if self.md.norm_has_bias:
-                    input_norm_bias = msg.pop("input norm bias")
-                    post_norm_bias = msg.pop("post norm bias")
+                    input_norm_bias = msg.pop("attn norm bias")
+                    post_norm_bias = msg.pop("mlp norm bias")
 
                 # Split up the parallel tensors
                 qkv_weight = chunk_weight(msg.pop("qkv weight"), "column", self.args.target_tensor_parallel_size)

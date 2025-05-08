@@ -275,12 +275,12 @@ def save_checkpoint(queue, args):
             msg = queue_get(f"transformer layer {total_layer_num}")
 
             # duplicated tensors
-            input_norm_weight = msg.pop("input norm weight")
+            input_norm_weight = msg.pop("attn norm weight")
             if md.norm_has_bias:
-                input_norm_bias = msg.pop("input norm bias")
-            post_norm_weight = msg.pop("post norm weight")
+                input_norm_bias = msg.pop("attn norm bias")
+            post_norm_weight = msg.pop("mlp norm weight")
             if md.norm_has_bias:
-                post_norm_bias = msg.pop("post norm bias")
+                post_norm_bias = msg.pop("mlp norm bias")
             if md.linear_bias:
                 dense_bias = msg.pop("dense bias")
                 mlp_l1_bias = msg.pop("mlp l1 bias")

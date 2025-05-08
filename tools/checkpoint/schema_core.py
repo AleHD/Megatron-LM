@@ -108,6 +108,7 @@ class CoreTESchema(CoreSchema):
             # xielu weights
             "mlp_xielu_alpha_p" : "mlp.activation_func.alpha_p",
             "mlp_xielu_alpha_n" : "mlp.activation_func.alpha_n",
+            # no need to add layerscale weights as they're always fused with postnorm
 
         } | extra_layer_schema, prefix=prefix)
 

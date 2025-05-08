@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 
 import torch
 import torch.multiprocessing as mp
-from transformers import AutoModelForCausalLM, SwissAIConfig, SwissAIForCausalLM, GenerationConfig
+from transformers import AutoModelForCausalLM, SwissAIFP8Config, SwissAIFP8ForCausalLM, GenerationConfig
 
 sys.path.append(os.path.abspath(
     os.path.join(os.path.dirname(__file__),
@@ -102,19 +102,21 @@ def save_checkpoint(queue: mp.Queue, args):
     if md.model_type != "GPT":
         raise ValueError("wrong model_type in metadata. must be GPT")
     if md.checkpoint_args.position_embedding_type != "rope":
-        raise ValueError("LLama model must use RoPE")
+        raise ValueError("SwissAIFP8 model must use RoPE")
     if md.checkpoint_args.use_rope_scaling:
-        raise ValueError("LLama model must use llama3 RoPE scaling")
+        raise ValueError("SwissAIFP8 model must use llama3 RoPE scaling")
     if md.checkpoint_args.normalization != "RMSNorm":
-        raise ValueError("LLama model must not use mlp bias")
+        raise ValueError("SwissAIFP8 model must not use mlp bias")
     if md.checkpoint_args.add_bias_linear:
-        raise ValueError("LLama model must use RMSNorm")
+        raise ValueError("SwissAIFP8 model must use RMSNorm")
     if md.checkpoint_args.swiglu:
         activation = "swiglu"
     elif md.checkpoint_args.xielu:
         activation = "xielu"
+    elif md.checkpoint_args.scaled_swiglu:
+        activation = "smoothswiglu"
     else:
-        raise ValueError("SwissAI model must use xielu or swiglu")
+        raise ValueError("SwissAIFP8 model must use xielu or swiglu or smoothswiglu")
 
     torch_dtype = torch.float32
     if md.checkpoint_args.bf16:
@@ -151,15 +153,16 @@ def save_checkpoint(queue: mp.Queue, args):
             print(f"saving tokenizer to {args.save_dir}")
             tokenizer.save_pretrained(args.save_dir)
 
+
         ### save config.json
-        llama_conf = SwissAIConfig(
+        llama_conf = SwissAIFP8Config(
             vocab_size=md.true_vocab_size if md.true_vocab_size else md.checkpoint_args.padded_vocab_size,
             hidden_size=md.checkpoint_args.hidden_size,
             intermediate_size=md.checkpoint_args.ffn_hidden_size,
             num_hidden_layers=md.checkpoint_args.num_layers,
             num_attention_heads=md.checkpoint_args.num_attention_heads,
             num_key_value_heads=md.checkpoint_args.num_query_groups,
-            hidden_act="silu" if activation == "swiglu" else "xielu",
+            hidden_act="silu" if activation == "swiglu" else activation,
             max_position_embeddings=md.checkpoint_args.max_position_embeddings,
             rms_norm_eps=md.checkpoint_args.norm_epsilon,
             tie_word_embeddings=not md.checkpoint_args.untie_embeddings_and_output_weights,
@@ -175,10 +178,15 @@ def save_checkpoint(queue: mp.Queue, args):
             torch_dtype=torch_dtype,
             attention_dropout=md.checkpoint_args.attention_dropout,
             hidden_dropout=md.checkpoint_args.hidden_dropout,
-            model_type="swissai",
-            architectures=["SwissAIForCausalLM"],
+            model_type="swissai_fp8",
+            architectures=["SwissAIFP8ForCausalLM"],
             qk_norm=md.checkpoint_args.qk_layernorm,
-            post_norm=md.checkpoint_args.post_layer_norm if hasattr(md.checkpoint_args, "post_layer_norm") else False
+            freeze_qk=md.checkpoint_args.no_train_qk_gains,
+            qk_type="rms",
+            pre_norm=md.checkpoint_args.pre_layer_norm if hasattr(md.checkpoint_args, "pre_layer_norm") else False,
+            post_norm=md.checkpoint_args.post_layer_norm if hasattr(md.checkpoint_args, "post_layer_norm") else False,
+            input_upscale=md.checkpoint_args.input_embeddings_multiplier,
+            layerscale=md.checkpoint_args.layer_scale is not None,   # md.checkpoint_args should have all args the model was trained with (on Megatron), including `--layer-scale`
         )
         if args.hf_tokenizer:
             llama_conf.eos_token_id = tokenizer.eos_token_id
@@ -252,10 +260,10 @@ def save_checkpoint(queue: mp.Queue, args):
             message = queue_get(f"transformer layer {i_layer}")
             state_dict = {
                 f"model.layers.{i_layer}.attention_layernorm.weight": message[
-                    "input norm weight"
+                    "attn norm weight"
                 ],
                 f"model.layers.{i_layer}.feedforward_layernorm.weight": message[
-                    "post norm weight"
+                    "mlp norm weight"
                 ],
                 f"model.layers.{i_layer}.self_attn.o_proj.weight": message["dense weight"],
                 f"model.layers.{i_layer}.mlp.down_proj.weight": message["mlp l1 weight"]
@@ -353,7 +361,7 @@ def save_checkpoint(queue: mp.Queue, args):
         del state_dict
         gc.collect()
         print(f"Loading the converted pytorch checkpoint in a Llama HF model from {tmp_save_dir}")
-        model = SwissAIForCausalLM.from_pretrained(
+        model = SwissAIFP8ForCausalLM.from_pretrained(
             str(tmp_save_dir), torch_dtype=torch.bfloat16, low_cpu_mem_usage=False # last arg requires a recent version of accelerate
         )
 
@@ -422,4 +430,3 @@ def save_checkpoint(queue: mp.Queue, args):
         assert close >= threshold
 
     queue_get()  # Recv final "exit" message so saver exits gracefully.
-

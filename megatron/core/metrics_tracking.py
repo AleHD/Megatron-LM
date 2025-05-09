@@ -17,11 +17,12 @@ class Tracker:
     def __init__(self, args, metrics: Optional[list[str]] = None):
         if metrics is None:
             metrics = []
-        assert set(metrics) <= self.known_metrics
-        self.enabled = False
-        self.metrics = metrics
-        self.args = args
-
+        if args is None:
+            assert set(metrics) <= self.known_metrics
+            self.enabled = False
+            self.metrics = metrics
+            self.args = args
+        return
         self.intermediate_metrics_map = {}
         idx = 0
         if "mean" in self.metrics:

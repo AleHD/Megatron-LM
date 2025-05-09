@@ -77,6 +77,7 @@ class GPTDatasetConfig(BlendedMegatronDatasetConfig):
         assert self.reset_attention_mask is not None
         assert self.eod_mask_loss is not None
         assert self.goldfish_loss is not None  
+        self.bod_hiding=False if self.bod_hiding is None else None   # TODO : clean this
         assert self.bod_hiding is not None
 
         

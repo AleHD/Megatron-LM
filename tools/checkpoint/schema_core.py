@@ -91,6 +91,10 @@ class CoreTESchema(CoreSchema):
             "self_attn_qkv_weight" : "self_attention.linear_qkv.weight",
             "self_attn_qkv_bias" : "self_attention.linear_qkv.bias",
 
+            # post norm
+            "post_attention_layernorm": "post_attention_layernorm.weight",
+            "post_mlp_layernorm": "post_mlp_layernorm.weight",
+
             "self_attn_proj_weight" : "self_attention.linear_proj.weight",
             "self_attn_proj_bias" : "self_attention.linear_proj.bias",
             "self_attn_q_layernorm_weight" : "self_attention.q_layernorm.weight",

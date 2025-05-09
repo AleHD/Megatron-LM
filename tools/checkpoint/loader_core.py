@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 
 from schema_core import get_model_schema
 from utils import print_memory_usage
-
+from megatron.core.metrics_tracking import init_tracker
 
 def add_arguments(parser):
     group = parser.add_argument_group(title='Megatron loader')
@@ -79,6 +79,9 @@ def _load_checkpoint(queue, args):
 
     margs = parse_args()
     margs, checkpoint_args = load_args_from_checkpoint(margs)
+    if os.environ.get("FORCE_NO_FINALLN", "false") == "true":
+        checkpoint_args.final_layernorm = False
+        margs.final_layernorm = False
 
     # Arguments do sanity checks on the world size, but we don't care,
     # so trick it into thinking we are plenty of processes
@@ -301,6 +304,8 @@ def _load_checkpoint(queue, args):
                 layer = schema.get_layer(models[0], layer_num)
                 message["attn norm weight"] = layer["self_attn_norm_weight"]
                 message["mlp norm weight"] = layer["mlp_norm_weight"]
+                message["attn post_norm weight"] = layer["post_attention_layernorm"]
+                message["mlp post_norm weight"] = layer["post_mlp_layernorm"]
                 if norm_has_bias:
                     message["attn norm bias"] = layer["self_attn_norm_bias"]
                     message["mlp norm bias"] = layer["mlp_norm_bias"]
@@ -440,6 +445,7 @@ def _load_checkpoint(queue, args):
         ).build()
         loader = DataLoader(datasets[0], batch_size=4, shuffle=False)
         data = next(iter(loader))
+        init_tracker(None, [])
 
         # Get logits and send the message.
         device = "cuda"

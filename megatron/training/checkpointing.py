@@ -1135,7 +1135,8 @@ def load_args_from_checkpoint(
     _set_arg('attn_layernorm', force=True)
     _set_arg('mlp_layernorm', force=True)
     _set_arg('final_layernorm', force=True)
-    _set_arg('post_layernorm', force=True)
+    _set_arg('post_layer_norm', force=True)
+    _set_arg('pre_layer_norm', force=True)
 
     _set_arg('qknorm_impl', force=True)
     _set_arg('xielu', force=True)

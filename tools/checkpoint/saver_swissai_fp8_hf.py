@@ -70,6 +70,8 @@ def save_layer(
         ref_state_dict = perform_check(state_dict, ref_state_dict)
     for layer_name, weight_matrix in state_dict.items():
         index_dict["weight_map"][layer_name] = filename
+        if weight_matrix is None:
+            print(f"layer {layer_name} is None")
         index_dict["metadata"]["total_size"] += weight_matrix.numel()
     print(f"saving state dict to {dir_path}/{filename}")
     torch.save(state_dict, f"{dir_path}/{filename}")
@@ -187,7 +189,12 @@ def save_checkpoint(queue: mp.Queue, args):
             post_norm=md.checkpoint_args.post_layer_norm if hasattr(md.checkpoint_args, "post_layer_norm") else False,
             input_upscale=md.checkpoint_args.input_embeddings_multiplier,
             layerscale=md.checkpoint_args.layer_scale is not None,   # md.checkpoint_args should have all args the model was trained with (on Megatron), including `--layer-scale`
+            final_layernorm=md.checkpoint_args.final_layernorm,   # be careful, in some old ckpts, ale5 wrongly set final_layernorm to True but code didn't use it internally
         )
+
+        # DEBUG PRINTS
+        print(f"\n-----\nSwissAIFP8 config: {llama_conf}\n-----\n\n")
+
         if args.hf_tokenizer:
             llama_conf.eos_token_id = tokenizer.eos_token_id
             llama_conf.bos_token_id = tokenizer.bos_token_id
@@ -246,6 +253,7 @@ def save_checkpoint(queue: mp.Queue, args):
         state_dict = {
             "model.embed_tokens.weight": embeddings
         }
+        print(f"...saving embedding")
         index_dict, ref_state_dict = save_layer(
             state_dict,
             index_dict,
@@ -259,12 +267,8 @@ def save_checkpoint(queue: mp.Queue, args):
         for i_layer in range(llama_conf.num_hidden_layers):
             message = queue_get(f"transformer layer {i_layer}")
             state_dict = {
-                f"model.layers.{i_layer}.attention_layernorm.weight": message[
-                    "attn norm weight"
-                ],
-                f"model.layers.{i_layer}.feedforward_layernorm.weight": message[
-                    "mlp norm weight"
-                ],
+                f"model.layers.{i_layer}.attention_layernorm.weight": message["attn norm weight"] if llama_conf.pre_norm else message["attn post_norm weight"],
+                f"model.layers.{i_layer}.feedforward_layernorm.weight": message["mlp norm weight"] if llama_conf.pre_norm else message["mlp post_norm weight"],
                 f"model.layers.{i_layer}.self_attn.o_proj.weight": message["dense weight"],
                 f"model.layers.{i_layer}.mlp.down_proj.weight": message["mlp l1 weight"]
             }
@@ -313,7 +317,7 @@ def save_checkpoint(queue: mp.Queue, args):
                     f"model.layers.{i_layer}.self_attn.q_norm.weight": message["q norm weight"],
                     f"model.layers.{i_layer}.self_attn.k_norm.weight": message["k norm weight"],
                 }
-
+            print(f"...saving transformer layer {i_layer}")
             index_dict, ref_state_dict = save_layer(
                 state_dict,
                 index_dict,
@@ -322,17 +326,23 @@ def save_checkpoint(queue: mp.Queue, args):
                 check_reference=args.check_eq_hf,
                 ref_state_dict=ref_state_dict,
             )
-
-        if not md.checkpoint_args.untie_embeddings_and_output_weights:  # tied embeddings and lm-head
-            state_dict = {
-                "model.norm.weight": queue_get("final norm")["weight"],
-                "lm_head.weight": embeddings
-                }
-        else:                                                           # untied embeddings and lm-head
-            state_dict = {
-                "model.norm.weight": queue_get("final norm")["weight"],
-                "lm_head.weight": pad_weight(queue_get("output layer")["weight"], md.true_vocab_size) 
-        }
+        print("------final-LN-------", llama_conf.final_layernorm)
+        if llama_conf.final_layernorm:
+            if not md.checkpoint_args.untie_embeddings_and_output_weights:  # tied embeddings and lm-head
+                state_dict = {
+                    "model.norm.weight": queue_get("final norm")["weight"],
+                    "lm_head.weight": embeddings
+                    }
+            else:                                                           # untied embeddings and lm-head
+                state_dict = {
+                    "model.norm.weight": queue_get("final norm")["weight"],
+                    "lm_head.weight": pad_weight(queue_get("output layer")["weight"], md.true_vocab_size) 
+                    }
+        else:  # no final layer norm
+            _ = queue_get("final norm") # None (but has to be received)
+            state_dict = {"lm_head.weight": pad_weight(queue_get("output layer")["weight"], md.true_vocab_size) 
+                    }
+        print(f"...saving lm head")
         index_dict, ref_state_dict = save_layer(
             state_dict,
             index_dict,

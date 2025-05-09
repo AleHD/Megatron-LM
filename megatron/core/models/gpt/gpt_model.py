@@ -143,7 +143,7 @@ class GPTModel(LanguageModule):
             spec=transformer_layer_spec,
             pre_process=self.pre_process,
             post_process=self.post_process,
-            final_layer_norm=self.final_layernorm,
+            final_layer_norm=False,#self.final_layernorm,  # TODO
         )
 
         # Output

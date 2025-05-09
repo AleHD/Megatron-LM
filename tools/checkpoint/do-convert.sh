@@ -4,7 +4,7 @@
 #   - torch_dist           ---> torch ,  if CKPT_IS_TORCH_DIST=true.
 #   - core (torch backend) ---> HF    ,  always.
 
-if false; then
+if true; then
     echo "installing custom transformers"
     cd $SCRATCH/fp8/sai-transformers
     pip install -e .
@@ -16,6 +16,8 @@ CKPT_PATH=/capstor/store/cscs/swissai/a06/users/ahernnde/opv1-backup2/llama1.5B-
 export PYTHONPATH=$MEGATRON_LM_DIR
 
 # [torch_dist -> torch] dependencies
+export FORCE_NO_FINALLN=true   #TODO
+
 CKPT_IS_TORCH_DIST=true
 TORCH_DIST_SCRIPT=$MEGATRON_LM_DIR/scripts/conversion/torchdist_2_torch.py
 TORCH_CKPT_SAVE_PATH=$SCRATCH/fp8/Meg-Checkpoints/test-op
@@ -50,4 +52,5 @@ python $MEGATRON_LM_DIR/tools/checkpoint/convert.py \
     --saver $SAVER \
     --load-dir $LOAD_DIR \
     --save-dir $SAVE_DIR \
-    #\ --hf-tokenizer .....
+    --hf-tokenizer Dhia-GB/sai-tokenizer \
+    --test-logits

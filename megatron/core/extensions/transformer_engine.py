@@ -8,6 +8,7 @@ import warnings
 from typing import Callable, Optional, Iterable
 
 import torch
+import transformer_engine.pytorch
 import transformer_engine as te
 from packaging.version import Version as PkgVersion
 from torch import Tensor

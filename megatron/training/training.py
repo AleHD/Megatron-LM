@@ -182,12 +182,30 @@ def num_floating_point_operations(args, batch_size):
             * (args.n_encode_layers + args.n_decode_layers)
             * flops_per_layer
         )
-        # Now we handle recurrent blocks.
+        # Now we handle recurrent blocks, calculate forward only here.
         total_flops += (
-            expansion_factor
+            1
+            * args.n_recurrences
             * args.n_think_layers
             * flops_per_layer
         )
+        # Add backward.
+        total_flops += (
+            2
+            * args.n_latent_backwards
+            * args.n_think_layers
+            * flops_per_layer
+        )
+        # Potentially the adapter.
+        if args.think_adapter == "linear":
+            # add a 2hidden_size->hidden_size matmul
+            total_flops += (
+                2 * 2 * 3
+                * batch_size
+                * args.seq_length
+                * 2 * args.hidden_size
+                * args.hidden_size
+            )
     else:
         expansion_factor = 3  # 1 forward, two backwards.
         total_flops = (
@@ -784,7 +802,9 @@ def setup_model_and_optimizer(model_provider_func,
 
         args.iteration, args.num_floating_point_operations_so_far, args.tokens_so_far = load_checkpoint(
                 model, optimizer, opt_param_scheduler, checkpointing_context=checkpointing_context,
-                skip_load_to_model_and_opt=HAVE_FSDP2 and getattr(args, "use_torch_fsdp2", False))
+                skip_load_to_model_and_opt=HAVE_FSDP2 and getattr(args, "use_torch_fsdp2", False),
+                strict=args.dist_ckpt_strictness != "ignore_all",
+        )
         timers('load-checkpoint').stop(barrier=True)
         timers.log(['load-checkpoint'])
         one_logger and one_logger.log_metrics({
@@ -917,7 +937,8 @@ def train_step(forward_step_func, data_iterator,
 
 def training_log(loss_dict, total_loss_dict, learning_rate, decoupled_learning_rate, iteration,
                  loss_scale, report_memory_flag, skipped_iter,
-                 grad_norm, params_norm, params_norm_per_param, num_zeros_in_grad):
+                 grad_norm, params_norm, params_norm_per_param, num_zeros_in_grad,
+                 num_floating_point_operations_so_far):
     """Log training information such as losses, timing, ...."""
     args = get_args()
     timers = get_timers()
@@ -1142,6 +1163,7 @@ def training_log(loss_dict, total_loss_dict, learning_rate, decoupled_learning_r
                 'tokens-per-sec-per-GPU': tokens_per_sec_per_gpu,
                 'eta-seconds': eta_seconds,
                 'flops-per-iteration': flops,
+                'flops-so-far': num_floating_point_operations_so_far,
             }, iteration)
 
         one_logger_utils.track_e2e_metrics(args.log_throughput, throughput)
@@ -1466,6 +1488,7 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
                                     log_throughput=args.log_throughput,
                                     num_floating_point_operations_so_far=args.num_floating_point_operations_so_far)
 
+    args.num_floating_point_operations_so_far = int(os.environ.get("OVERRIDE_FLOPS_SO_FAR", args.num_floating_point_operations_so_far))
     num_floating_point_operations_so_far = args.num_floating_point_operations_so_far
 
     # Setup some training config params.
@@ -1683,7 +1706,8 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
                                           decoupled_learning_rate,
                                           iteration, loss_scale,
                                           report_memory_flag, skipped_iter,
-                                          grad_norm, params_norm, params_norm_per_param, num_zeros_in_grad)
+                                          grad_norm, params_norm, params_norm_per_param, num_zeros_in_grad,
+                                          num_floating_point_operations_so_far)
 
         # Evaluation.
         if args.eval_interval and iteration % args.eval_interval == 0 and \

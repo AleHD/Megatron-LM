@@ -6,7 +6,13 @@ SEQ_LEN=4096
 # Defaults.
 TIME=12:00:00
 NODES=1
+
 N_RECURRENCES=1
+LATENT_INIT=identity
+THINK_ADAPTER=none
+TRAIN_RECURRENCE_METHOD=constant
+
+NEW_WEIGHTS=false
 
 # Data.
 DATAROOT=/iopsstor/scratch/cscs/jpcoles/a06
@@ -47,6 +53,10 @@ usage () {
 	echo "--n-encode <int>: Number of encode layers."
 	echo "--n-think <int>: Number of think layers."
 	echo "--n-decode <int>: Number of decode layers."
+	echo "--latent-init <identity/truncnorm>"
+	echo "--think-adapter <none/linear>"
+	echo "--train-recurrence-method <constant/poisson>"
+	echo "--n-backwards <int>"
 }
 
 # Prints error message and then exit 1.
@@ -106,10 +116,15 @@ while [[ $# -gt 0 ]]; do
 		--n-encode) N_ENCODE=$2; shift 2;;
 		--n-think) N_THINK=$2; shift 2;;
 		--n-decode) N_DECODE=$2; shift 2;;
+		--latent-init) LATENT_INIT=$2; shift 2;;
+		--think-adapter) THINK_ADAPTER=$2; shift 2;;
+		--train-recurrence-method) TRAIN_RECURRENCE_METHOD=$2; shift 2;;
+		--n-backwards) N_BACKWARDS=$2; shift 2;;
 	esac
 done
 
 #= Resolve Args =#
+EXTRA_ARGS=()
 if [[ $N_RECURRENCES -eq 1 ]]; then
 	MODEL_BASE=Apertus
 	MODEL_BASE_SUFFIX=""
@@ -117,12 +132,31 @@ else
 	if [ -z ${N_ENCODE+x} ] || [ -z ${N_THINK+x} ] || [ -z ${N_DECODE+x} ]; then
 		PRINT_USAGE=false die "You must specify --n-encode, --n-think and --n-decode when using N_RECURRENCES > 1"
 	fi
-	MODEL_BASE=ETP
+
+	if [[ $LATENT_INIT = identity ]] && [[ $THINK_ADAPTER = none ]] && [[ $TRAIN_RECURRENCE_METHOD = constant ]]; then
+		MODEL_BASE=ETP
+	elif [[ $LATENT_INIT = truncnorm ]] && [[ $THINK_ADAPTER = linear ]] && [[ $TRAIN_RECURRENCE_METHOD = poisson ]]; then
+		MODEL_BASE=Ping
+	else
+		MODEL_BASE=Recurrent
+	fi
+	N_BACKWARDS=${N_BACKWARDS:-$N_RECURRENCES}
 	MODEL_BASE_SUFFIX="-${N_ENCODE}_${N_THINK}x${N_RECURRENCES}_$N_DECODE"
+
+	if [[ $THINK_ADAPTER = linear ]]; then
+		NEW_WEIGHTS=true
+	fi
+fi
+
+if [[ $MODEL_BASE = Ping ]]; then
+	if [[ $SIZE = 1 ]]; then
+		MBS=2
+	fi
+else
+	EXTRA_ARGS+=(--overlap-param-gather)
 fi
 
 SUFFIX=()
-EXTRA_ARGS=()
 if [ -z ${ITERS+x} ]; then
 	ITERS=$DEFAULT_ITERS
 elif [[ $ITERS -ne $DEFAULT_ITERS ]]; then
@@ -132,12 +166,32 @@ TRAINING_STEPS=$(($ITERS + $STEP_LOAD_IF_UNRESOLVED))
 
 if [[ $N_RECURRENCES -gt 1 ]]; then
 	EXTRA_ARGS+=(
+		--log-global-metrics num_recurrences
 		--n-recurrences $N_RECURRENCES
 		--n-encode-layers $N_ENCODE
 		--n-think-layers $N_THINK
 		--n-decode-layers $N_DECODE
-		--log-global-metrics num_recurrences
+		--latent-init $LATENT_INIT
+		--think-adapter $THINK_ADAPTER
+		--train-recurrence-method $TRAIN_RECURRENCE_METHOD
+		--n-latent-backwards $N_BACKWARDS
 	)
+
+	if [[ $MODEL_BASE != ETP ]] && [[ $MODEL_BASE != Ping ]]; then  # Then we need to specify, latent init, adatper and method in the suffix.
+		if [[ $LATENT_INIT != identity ]]; then
+			SUFFIX+=(latinit_$LATENT_INIT)
+		fi
+		if [[ $THINK_ADAPTER != none ]]; then
+			SUFFIX+=(adapt_$THINK_ADAPTER)
+		fi
+		if [[ $TRAIN_RECURRENCE_METHOD != constant ]]; then
+			SUFFIX+=(rec_$TRAIN_RECURRENCE_METHOD)
+		fi
+	fi
+
+	if [[ $N_BACKWARDS -ne $N_RECURRENCES ]]; then
+		SUFFIX+=("bck$N_BACKWARDS")
+	fi
 fi
 
 # Get important directory names.
@@ -152,7 +206,7 @@ MEGATRON_LM_DIR=/capstor/store/cscs/swissai/infra01/users/ahernnde/workspace/lat
 PROJECT_DIR=/capstor/store/cscs/swissai/infra01/users/ahernnde/workspace/latency/logs/$SCRIPT_VERSION
 DATASET_CACHE_DIR=$SCRATCH/datasets/cache
 PROJECT_NAME=latency-$SCRIPT_VERSION
-EXP_NAME=$MODEL_BASE$-${SIZE}B$MODEL_BASE_SUFFIX$SUFFIX
+EXP_NAME=$MODEL_BASE-${SIZE}B$MODEL_BASE_SUFFIX$SUFFIX
 
 EXP_DIR=$PROJECT_DIR/$EXP_NAME
 DEBUG_ROOT=$EXP_DIR/debug
@@ -172,14 +226,15 @@ if [ ! -f $CKPT_DIR/latest_checkpointed_iteration.txt ]; then
 fi
 if [ $FIX_XIELU_IF_UNRESOLVED = true ]; then
 	MAYBE_ADD_XIELU_FIX="EXTRA_ARGS=\\\"\\\$EXTRA_ARGS --fix-old-xielu\\\""
-else
-	MAYBE_ADD_XIELU_FIX=""
+fi
+if [ $NEW_WEIGHTS = true ]; then
+	MAYBE_NONSTRICT_LOAD="EXTRA_ARGS=\\\"\\\$EXTRA_ARGS --dist-ckpt-strictness ignore_all --no-load-optim\\\""
 fi
 
 # Determine partition.
 IFS=: read -r T_H T_M T_S <<< "$time"
 TIME_MINS=$((10#$T_H * 60 + 10#$T_M + (10#$T_S + 59) / 60))
-if [[ $DEBUG = true ]] && ((TIME_MINS*NODES < 90)); then
+if [[ $DEBUG = true ]] && ((TIME_MINS*NODES < 90)) && [[ $NODES -le 4 ]]; then
 	PARTITION=debug
 	MAYBE_SIGNAL=""
 else
@@ -244,7 +299,6 @@ REGULARIZATION_ARGS=(
 	--ademamix-alpha-warmup 100000
 )
 
-
 TRAINING_ARGS=(
 	--micro-batch-size $MBS
 	--global-batch-size $GBS
@@ -289,7 +343,6 @@ DISTRIBUTED_ARGS=(
 	--pipeline-model-parallel-size 1
 	--use-distributed-optimizer
 	--overlap-grad-reduce
-	--overlap-param-gather
 )
 
 TOKENIZER_ARGS=(
@@ -394,7 +447,9 @@ srun --cpus-per-task \$SLURM_CPUS_PER_TASK -lu bash -c "
 	if [ -h $CKPT_DIR/iter_\\\$LAST_STEP ]; then
 		echo [\\\$(date)] Adding first time args.
 		EXTRA_ARGS=\"\\\$EXTRA_ARGS --override-opt_param-scheduler\"
+		export OVERRIDE_FLOPS_SO_FAR=0
 		$MAYBE_ADD_XIELU_FIX
+		$MAYBE_NONSTRICT_LOAD
 	fi
 
 	RANK=\\\$SLURM_PROCID LOCAL_RANK=\\\$SLURM_LOCALID $CMD \\\$EXTRA_ARGS $ARGS

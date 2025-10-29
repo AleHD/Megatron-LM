@@ -1,5 +1,6 @@
 # Copyright (c) 2024, NVIDIA CORPORATION. All rights reserved.
 
+import math
 from dataclasses import dataclass
 from typing import Callable, List, Optional, Tuple, Union
 
@@ -266,6 +267,13 @@ class TransformerConfig(ModelParallelConfig):
     n_encode_layers: int = None
     n_think_layers: int = None
     n_decode_layers: int = None
+
+    think_adapter: str = "none"
+    latent_init: str = "identity"
+    train_recurrence_method: str = "constant"
+    n_latent_backwards: int = None
+
+    latent_init_std: float = math.sqrt(2/5)
 
     ####################
     # MoE related

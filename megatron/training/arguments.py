@@ -2,6 +2,7 @@
 
 """Megatron arguments."""
 
+import math
 import argparse
 import dataclasses
 import json
@@ -23,6 +24,7 @@ from megatron.core.transformer.enums import AttnBackend
 from megatron.core.utils import is_torch_min_version
 from megatron.training.activations import squared_relu, XIELU, XIPReLU, XIPReLUP
 from megatron.training.utils import update_use_dist_ckpt
+from megatron.core.transformer import latent
 
 
 def parse_args(extra_args_provider=None, ignore_unknown_args=False):
@@ -819,6 +821,8 @@ def validate_args(args, defaults={}):
         assert args.n_decode_layers is not None and args.n_decode_layers >= 0
         assert args.num_layers == args.n_encode_layers + args.n_think_layers + args.n_decode_layers
         assert args.pipeline_model_parallel_size == 1
+        if args.n_latent_backwards is None:
+            args.n_latent_backwards = args.n_recurrences
     else:
         args.n_encode_layers = 0
         args.n_think_layers = 0
@@ -1180,6 +1184,13 @@ def _add_network_size_args(parser):
     group.add_argument('--n-encode-layers', type=int, default=None)
     group.add_argument('--n-think-layers', type=int, default=None)
     group.add_argument('--n-decode-layers', type=int, default=None)
+
+    group.add_argument('--think-adapter', default="none", choices=latent.ADAPTERS.keys())
+    group.add_argument('--latent-init', default="identity", choices=latent.INITIALIZERS.keys())
+    group.add_argument('--train-recurrence-method', default="constant", choices=latent.TIMES.keys())
+    group.add_argument('--n-latent-backwards', type=int, default=None)
+
+    group.add_argument('--latent-init-std', default=math.sqrt(2/5))
     return parser
 
 

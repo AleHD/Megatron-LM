@@ -1,9 +1,13 @@
 # Copyright (c) 2024, NVIDIA CORPORATION. All rights reserved.
 
 from contextlib import nullcontext
+import math
+
+from numpy import rec
 from dataclasses import dataclass
 from typing import List, Optional, Union
 
+from megatron.core.transformer import latent
 import torch
 from torch import Tensor
 
@@ -264,6 +268,10 @@ class TransformerBlock(MegatronModule):
         self._build_layers()
         self.num_layers_per_pipeline_rank = len(self.layers)
         self.tp_only_amax_red = config.tp_only_amax_red
+
+        self.latent_adapter = latent.ADAPTERS[self.config.think_adapter](self.config)
+        self.latent_init = latent.INITIALIZERS[self.config.latent_init](self.config)
+        self.latent_timer = latent.TIMES[self.config.train_recurrence_method](self.config)
 
     def _build_layers(self):
         # Transformer layers.
@@ -603,15 +611,32 @@ class TransformerBlock(MegatronModule):
                 hidden_states, context = f(hidden_states, context, self.layers[l_no])
 
             # Prepare for thinking block.
-            latent_states = hidden_states
-            n_recurrences = self.config.n_recurrences
+            latent_states = self.latent_init(hidden_states)
+            n_recurrences = self.latent_timer()
+            dynamic_n_recurrences = float("inf")
             recursion_idx = 0
 
             # Run thinking block.
-            while recursion_idx < n_recurrences:
-                for l_no in range(think_i0, dec_i0):
-                    latent_states, context = f(latent_states, context, self.layers[l_no])
-                recursion_idx += 2
+            while recursion_idx < min(n_recurrences, dynamic_n_recurrences):
+                # Adapter.
+                latent_states_prev = latent_states
+                latent_states = self.latent_adapter(hidden_states, latent_states)
+
+                # Forward.
+                if recursion_idx + self.config.n_latent_backwards < min(n_recurrences, dynamic_n_recurrences):
+                    ctx = torch.no_grad()
+                else:
+                    ctx = nullcontext()
+                with ctx:
+                    for l_no in range(think_i0, dec_i0):
+                        latent_states, context = f(latent_states, context, self.layers[l_no])
+
+                # Early exit.
+                if not math.isinf(dynamic_n_recurrences) and self.latent_timer.early_exit(latent_states, latent_states_prev):
+                    dynamic_n_recurrences = recursion_idx + self.config.n_latent_backwards
+                recursion_idx += 1
+            assert recursion_idx == min(n_recurrences, dynamic_n_recurrences)
+            n_recurrences = recursion_idx
             hidden_states = latent_states
 
             # Run decode block.

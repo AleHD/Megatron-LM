@@ -259,6 +259,14 @@ class TransformerConfig(ModelParallelConfig):
     tp_only_amax_red: bool = False
     """When set to True, reduce the FP8 AMAX only in the TP or TP-CP domain"""
 
+    ######################
+    # Recurrence related #
+    ######################
+    n_recurrences: int = 1
+    n_encode_layers: int = None
+    n_think_layers: int = None
+    n_decode_layers: int = None
+
     ####################
     # MoE related
     ####################

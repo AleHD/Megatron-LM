@@ -811,6 +811,19 @@ def validate_args(args, defaults={}):
         assert args.transformer_impl == "transformer_engine", "OP arguments are only checked with the TE transformer implementation"
         assert not args.multi_latent_attention, "OP arguments are not implemented with --multi-latent-attention"
 
+    # Recurrence checks.
+    assert args.n_recurrences >= 1
+    if args.n_recurrences > 1:
+        assert args.n_encode_layers is not None and args.n_encode_layers >= 0
+        assert args.n_think_layers is not None and args.n_think_layers >= 0
+        assert args.n_decode_layers is not None and args.n_decode_layers >= 0
+        assert args.num_layers == args.n_encode_layers + args.n_think_layers + args.n_decode_layers
+        assert args.pipeline_model_parallel_size == 1
+    else:
+        args.n_encode_layers = 0
+        args.n_think_layers = 0
+        args.n_decode_layers = args.num_layers
+
     # MoE loss and include embedding and loss layer check
     if args.num_experts is not None:
         if args.moe_router_load_balancing_type != "none" or args.moe_z_loss_coeff is not None:
@@ -1161,6 +1174,12 @@ def _add_network_size_args(parser):
                        help="Multiply input_embeddings by this value")
     group.add_argument("--layernorm-init", default=None, type=float,
                        help="Initialization value for layernorms")
+
+    # Recurrence arguments.
+    group.add_argument('--n-recurrences', type=int, default=1)
+    group.add_argument('--n-encode-layers', type=int, default=None)
+    group.add_argument('--n-think-layers', type=int, default=None)
+    group.add_argument('--n-decode-layers', type=int, default=None)
     return parser
 
 
@@ -1240,6 +1259,8 @@ def _add_logging_args(parser):
                        help='If set, log progress (in terms of number of processed tokens and '
                        'number of floating-point operations) to progress.txt file in checkpoint '
                        'directory.')
+    group.add_argument("--log-global-metrics", nargs="+", default=[],
+                       choices=["num_recurrences"])
     group.add_argument('--timing-log-level', type=int,
                        default=0, choices=range(0,3),
                        help='Granularity level to measure and report timing. '

@@ -30,6 +30,7 @@ from megatron.core.utils import (
     StragglerDetector,
     is_float8tensor,
 )
+from megatron.core.metrics.global_metrics import get_tracker
 from megatron.training.checkpointing import load_checkpoint
 from megatron.training.checkpointing import save_checkpoint
 from megatron.training.checkpointing import checkpoint_exists
@@ -142,13 +143,13 @@ def num_floating_point_operations(args, batch_size):
     #       architectures implemented in this codebase (e.g., h->ffn_h GEMM and ffn_h->h GEMM
     #       in MLP layer).
     # - 2x: A GEMM of a m*n tensor with a n*k tensor requires 2mnk floating-point operations.
-    expansion_factor = 3 * 2 * 2
+    # expansion_factor = 3 * 2 * 2
+    expansion_factor = 2 * 2  # we ignore the 3x because it depends on the num backwards.
 
-    return (
+    flops_per_layer = (
         expansion_factor
         * batch_size
         * args.seq_length
-        * args.num_layers
         * args.hidden_size
         * args.hidden_size
         * (
@@ -172,6 +173,31 @@ def num_floating_point_operations(args, batch_size):
             + (args.padded_vocab_size / (2 * args.num_layers * args.hidden_size))
         )
     )
+
+    if args.n_recurrences > 1:
+        # First we handle encode & decode blocks.
+        expansion_factor = 3
+        total_flops = (
+            expansion_factor
+            * (args.n_encode_layers + args.n_decode_layers)
+            * flops_per_layer
+        )
+        # Now we handle recurrent blocks.
+        total_flops += (
+            expansion_factor
+            * args.n_think_layers
+            * flops_per_layer
+        )
+    else:
+        expansion_factor = 3  # 1 forward, two backwards.
+        total_flops = (
+            expansion_factor
+            * args.num_layers
+            * flops_per_layer
+        )
+
+    return total_flops
+
 
 
 def get_start_time_from_progress_log():
@@ -973,6 +999,12 @@ def training_log(loss_dict, total_loss_dict, learning_rate, decoupled_learning_r
        (iteration % args.tensorboard_log_interval == 0):
         timers.write(timers_to_log, writer, iteration,
                      normalizer=total_iterations)
+
+    tracker = None
+    if len(args.log_global_metrics) > 0:
+        tracker = get_tracker()
+        tracker.aggregate()
+
     if writer and (iteration % args.tensorboard_log_interval == 0):
         if args.record_memory_history and is_last_rank():
             snapshot = torch.cuda.memory._snapshot()
@@ -1068,6 +1100,16 @@ def training_log(loss_dict, total_loss_dict, learning_rate, decoupled_learning_r
                 mem_stats["allocation.all.current"],
                 iteration,
             )
+
+        if tracker is not None:
+            for key, value in tracker.get_final_metrics():
+                writer.add_scalar(key, value, iteration)
+                if wandb_writer:
+                    wandb_writer.log({key: value}, iteration)
+
+    if tracker is not None:
+        tracker.reset()
+
     if args.num_experts is not None:
         moe_loss_scale = 1 / get_num_microbatches()
         track_moe_metrics(moe_loss_scale, iteration, writer, wandb_writer, total_loss_dict, args.moe_per_layer_logging)
@@ -1076,8 +1118,8 @@ def training_log(loss_dict, total_loss_dict, learning_rate, decoupled_learning_r
         elapsed_time = timers('interval-time').elapsed(barrier=True)
         elapsed_time_per_iteration = elapsed_time / total_iterations
 
-        throughput = num_floating_point_operations(args, batch_size) / (
-            elapsed_time_per_iteration * 10**12 * args.world_size)
+        flops = num_floating_point_operations(args, batch_size)
+        throughput =  flops / (elapsed_time_per_iteration * 10**12 * args.world_size)
 
         # Calculate tokens per second
         tokens_per_iteration = args.global_batch_size * args.seq_length
@@ -1098,7 +1140,8 @@ def training_log(loss_dict, total_loss_dict, learning_rate, decoupled_learning_r
             wandb_writer.log({
                 'iteration-time': elapsed_time_per_iteration,
                 'tokens-per-sec-per-GPU': tokens_per_sec_per_gpu,
-                'eta-seconds': eta_seconds
+                'eta-seconds': eta_seconds,
+                'flops-per-iteration': flops,
             }, iteration)
 
         one_logger_utils.track_e2e_metrics(args.log_throughput, throughput)
@@ -1557,6 +1600,10 @@ def train(forward_step_func, model, optimizer, opt_param_scheduler,
                                          checkpointing_context, train_data_iterator=train_data_iterator)
         num_microbatches = get_num_microbatches()
         update_num_microbatches(args.consumed_train_samples, consistency_check=True, verbose=True)
+
+        tracker = get_tracker()
+        if len(args.log_global_metrics) > 0:
+            tracker.enable()
 
         # Run training step.
         args.curr_iteration = iteration

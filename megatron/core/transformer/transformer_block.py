@@ -18,6 +18,7 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.transformer.transformer_layer import BaseTransformerLayer, TransformerLayer
 from megatron.core.transformer.utils import sharded_state_dict_default
 from megatron.core.utils import is_te_min_version, make_viewless_tensor
+from megatron.core.metrics.global_metrics import get_tracker
 
 try:
     from megatron.core.extensions.transformer_engine import (
@@ -529,20 +530,21 @@ class TransformerBlock(MegatronModule):
         else:
             fp8_context = nullcontext()
 
+        global_tracker = get_tracker()
         with rng_context, fp8_context:
             # Forward pass.
-            if self.config.recompute_granularity == 'full' and self.training:
-                hidden_states = self._checkpointed_forward(
-                    hidden_states=hidden_states,
-                    attention_mask=attention_mask,
-                    context=context,
-                    context_mask=context_mask,
-                    rotary_pos_emb=rotary_pos_emb,
-                    attention_bias=attention_bias,
-                    packed_seq_params=packed_seq_params,
-                )
-            else:
-                for l_no, layer in enumerate(self.layers):
+            def f(hidden_states, context, layer):
+                if self.config.recompute_granularity == 'full' and self.training:
+                    hidden_states = self._checkpointed_forward(
+                        hidden_states=hidden_states,
+                        attention_mask=attention_mask,
+                        context=context,
+                        context_mask=context_mask,
+                        rotary_pos_emb=rotary_pos_emb,
+                        attention_bias=attention_bias,
+                        packed_seq_params=packed_seq_params,
+                    )
+                else:
                     with self.offload_context:
                         layer.use_cudagraph = True
                         if (len(self.cuda_graphs) == 0) or (not self.training):
@@ -589,6 +591,36 @@ class TransformerBlock(MegatronModule):
                         and self.group_prefetch_offload_commit_async is not None
                     ):
                         hidden_states = self.group_prefetch_offload_commit_async(hidden_states)
+                return hidden_states, context
+
+            # Useful recurrence-related variables.
+            enc_i0 = 0
+            think_i0 = enc_i0 + self.config.n_encode_layers
+            dec_i0 = think_i0 + self.config.n_think_layers
+
+            # Run encode block.
+            for l_no in range(enc_i0, think_i0):
+                hidden_states, context = f(hidden_states, context, self.layers[l_no])
+
+            # Prepare for thinking block.
+            latent_states = hidden_states
+            n_recurrences = self.config.n_recurrences
+            recursion_idx = 0
+
+            # Run thinking block.
+            while recursion_idx < n_recurrences:
+                for l_no in range(think_i0, dec_i0):
+                    latent_states, context = f(latent_states, context, self.layers[l_no])
+                recursion_idx += 2
+            hidden_states = latent_states
+
+            # Run decode block.
+            for l_no in range(dec_i0, self.config.num_layers):
+                hidden_states, context = f(hidden_states, context, self.layers[l_no])
+
+            # Update metrics.
+            num_recurrences_tensor = torch.full((hidden_states.size(1),), n_recurrences, dtype=torch.bfloat16, device=hidden_states.device)
+            global_tracker.update(num_recurrences_tensor, "num_recurrences")
 
         # Final layer norm.
         if self.final_layernorm is not None:

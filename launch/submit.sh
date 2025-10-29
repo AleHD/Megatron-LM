@@ -6,6 +6,7 @@ SEQ_LEN=4096
 # Defaults.
 TIME=12:00:00
 NODES=1
+N_RECURRENCES=1
 
 # Data.
 DATAROOT=/iopsstor/scratch/cscs/jpcoles/a06
@@ -41,6 +42,11 @@ usage () {
 	echo "--nodes <int>: Runs with this many nodes."
 	# Data settings.
 	echo "--iters <int>: Number of iterations to run."
+	# Recurrence settings.
+	echo "--n-recurrences <int>: Default number of recurrences."
+	echo "--n-encode <int>: Number of encode layers."
+	echo "--n-think <int>: Number of think layers."
+	echo "--n-decode <int>: Number of decode layers."
 }
 
 # Prints error message and then exit 1.
@@ -95,19 +101,44 @@ while [[ $# -gt 0 ]]; do
 		--nodes) NODES=$2; shift 2;;
 		# Data settings.
 		--iters) ITERS=$2; shift 2;;
+		# Recurrence settings.
+		--n-recurrences) N_RECURRENCES=$2; shift 2;;
+		--n-encode) N_ENCODE=$2; shift 2;;
+		--n-think) N_THINK=$2; shift 2;;
+		--n-decode) N_DECODE=$2; shift 2;;
 	esac
 done
 
 #= Resolve Args =#
-MODEL_BASE=Apertus
+if [[ $N_RECURRENCES -eq 1 ]]; then
+	MODEL_BASE=Apertus
+	MODEL_BASE_SUFFIX=""
+else
+	if [ -z ${N_ENCODE+x} ] || [ -z ${N_THINK+x} ] || [ -z ${N_DECODE+x} ]; then
+		PRINT_USAGE=false die "You must specify --n-encode, --n-think and --n-decode when using N_RECURRENCES > 1"
+	fi
+	MODEL_BASE=ETP
+	MODEL_BASE_SUFFIX="-${N_ENCODE}_${N_THINK}x${N_RECURRENCES}_$N_DECODE"
+fi
 
 SUFFIX=()
+EXTRA_ARGS=()
 if [ -z ${ITERS+x} ]; then
 	ITERS=$DEFAULT_ITERS
 elif [[ $ITERS -ne $DEFAULT_ITERS ]]; then
 	SUFFIX+=(it$ITERS)
 fi
 TRAINING_STEPS=$(($ITERS + $STEP_LOAD_IF_UNRESOLVED))
+
+if [[ $N_RECURRENCES -gt 1 ]]; then
+	EXTRA_ARGS+=(
+		--n-recurrences $N_RECURRENCES
+		--n-encode-layers $N_ENCODE
+		--n-think-layers $N_THINK
+		--n-decode-layers $N_DECODE
+		--log-global-metrics num_recurrences
+	)
+fi
 
 # Get important directory names.
 if (( ${#SUFFIX} == 0 )); then
@@ -117,10 +148,11 @@ else
 fi
 
 MEGATRON_LM_DIR=/capstor/store/cscs/swissai/infra01/users/ahernnde/workspace/latency/AleHD__Megatron-LM
+#PROJECT_DIR=/iopsstor/scratch/cscs/ahernnde/latency_logs/$SCRIPT_VERSION
 PROJECT_DIR=/capstor/store/cscs/swissai/infra01/users/ahernnde/workspace/latency/logs/$SCRIPT_VERSION
 DATASET_CACHE_DIR=$SCRATCH/datasets/cache
 PROJECT_NAME=latency-$SCRIPT_VERSION
-EXP_NAME=$MODEL_BASE-${SIZE}B$SUFFIX
+EXP_NAME=$MODEL_BASE$-${SIZE}B$MODEL_BASE_SUFFIX$SUFFIX
 
 EXP_DIR=$PROJECT_DIR/$EXP_NAME
 DEBUG_ROOT=$EXP_DIR/debug
@@ -132,7 +164,6 @@ WANDB_DIR=$EXP_DIR/wandb
 mkdir -p $TRIGGER_DIR
 
 # Resolve the --load, in case the current CKPT_DIR doesn't exist.
-EXTRA_ARGS=()
 if [ ! -f $CKPT_DIR/latest_checkpointed_iteration.txt ]; then
 	mkdir -p $CKPT_DIR
 	echo Run not found, creating symlink from source at iter $STEP_LOAD_IF_UNRESOLVED

@@ -177,7 +177,19 @@ def save_checkpoint(queue: mp.Queue, args):
             model_type="apertus",
             architectures=["ApertusForCausalLM"],
             qk_norm=md.checkpoint_args.qk_layernorm,
-            post_norm=md.checkpoint_args.post_layer_norm if hasattr(md.checkpoint_args, "post_layer_norm") else False
+            post_norm=md.checkpoint_args.post_layer_norm if hasattr(md.checkpoint_args, "post_layer_norm") else False,
+
+            # Latent stuff.
+            n_recurrences=md.n_recurrences,
+            n_encode_layers=md.n_encode_layers,
+            n_think_layers=md.n_think_layers,
+            n_decode_layers=md.n_decode_layers,
+            latent_init=md.latent_init,
+            latent_init_std=md.latent_init_std,
+            think_adapter=md.think_adapter,
+            train_recurrence_method=md.train_recurrence_method,
+            n_latent_backwards=md.n_latent_backwards,
+            linear_latent_adapter_alpha=md.linear_latent_adapter_alpha,
         )
         if args.hf_tokenizer:
             llama_conf.eos_token_id = tokenizer.eos_token_id
@@ -245,6 +257,20 @@ def save_checkpoint(queue: mp.Queue, args):
             check_reference=args.check_eq_hf,
             ref_state_dict=ref_state_dict,
         )
+
+        # Same for latent adapter.
+        if md.think_adapter == "linear":
+            state_dict = {
+                "model.latent_adapter.linear.weight": queue_get("adapter")["adapter"]["weight"]
+            }
+            index_dict, ref_state_dict = save_layer(
+                state_dict,
+                index_dict,
+                dir_path=tmp_save_dir,
+                filename=f"pytorch_model-adapter.bin",
+                check_reference=args.check_eq_hf,
+                ref_state_dict=ref_state_dict,
+            )
 
         ### save every transformer layer
         for i_layer in range(llama_conf.num_hidden_layers):

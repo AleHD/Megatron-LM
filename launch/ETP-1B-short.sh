@@ -1,6 +1,6 @@
 # Recommended nodes: 2
 # ETA: ~8 x 2x4GPUh
-# Throughput w/2x4GPU: 2331
+# Throughput w/2x4GPU: ~2331
 # FLOPs/iter: ~37.405e15
 # Total FLOPs: ~93.513e18
 source .env

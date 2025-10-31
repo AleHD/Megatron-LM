@@ -11,6 +11,7 @@ N_RECURRENCES=1
 LATENT_INIT=identity
 THINK_ADAPTER=none
 TRAIN_RECURRENCE_METHOD=constant
+LINEAR_ADAPTER_ALPHA=1.0
 
 NEW_WEIGHTS=false
 
@@ -57,6 +58,7 @@ usage () {
 	echo "--think-adapter <none/linear>"
 	echo "--train-recurrence-method <constant/poisson>"
 	echo "--n-backwards <int>"
+	echo "--linear-adapter-alpha <int>"
 }
 
 # Prints error message and then exit 1.
@@ -120,6 +122,8 @@ while [[ $# -gt 0 ]]; do
 		--think-adapter) THINK_ADAPTER=$2; shift 2;;
 		--train-recurrence-method) TRAIN_RECURRENCE_METHOD=$2; shift 2;;
 		--n-backwards) N_BACKWARDS=$2; shift 2;;
+		--linear-adapter-alpha) LINEAR_ADAPTER_ALPHA=$2; shift 2;;
+		*) die Invalid argument $1
 	esac
 done
 
@@ -150,7 +154,7 @@ fi
 
 if [[ $MODEL_BASE = Ping ]]; then
 	if [[ $SIZE = 1 ]]; then
-		MBS=2
+		MBS=3
 	fi
 else
 	EXTRA_ARGS+=(--overlap-param-gather)
@@ -175,6 +179,7 @@ if [[ $N_RECURRENCES -gt 1 ]]; then
 		--think-adapter $THINK_ADAPTER
 		--train-recurrence-method $TRAIN_RECURRENCE_METHOD
 		--n-latent-backwards $N_BACKWARDS
+		--linear-latent-adapter-alpha $LINEAR_ADAPTER_ALPHA
 	)
 
 	if [[ $MODEL_BASE != ETP ]] && [[ $MODEL_BASE != Ping ]]; then  # Then we need to specify, latent init, adatper and method in the suffix.
@@ -188,7 +193,9 @@ if [[ $N_RECURRENCES -gt 1 ]]; then
 			SUFFIX+=(rec_$TRAIN_RECURRENCE_METHOD)
 		fi
 	fi
-
+	if [[ $LINEAR_ADAPTER_ALPHA != 1.0 ]]; then
+		SUFFIX+=(la$LINEAR_ADAPTER_ALPHA)
+	fi
 	if [[ $N_BACKWARDS -ne $N_RECURRENCES ]]; then
 		SUFFIX+=("bck$N_BACKWARDS")
 	fi
@@ -236,10 +243,10 @@ IFS=: read -r T_H T_M T_S <<< "$time"
 TIME_MINS=$((10#$T_H * 60 + 10#$T_M + (10#$T_S + 59) / 60))
 if [[ $DEBUG = true ]] && ((TIME_MINS*NODES < 90)) && [[ $NODES -le 4 ]]; then
 	PARTITION=debug
-	MAYBE_SIGNAL=""
 else
 	PARTITION=normal
 	MAYBE_SIGNAL="#SBATCH --signal=SIGUSR2@600"
+	MAYBE_DEPENDENCY="#SBATCH --dependency=singleton"
 fi
 
 #= Final Args =#
@@ -396,10 +403,10 @@ cat > $EXP_DIR/submit.sbatch << EOM
 #SBATCH --mem=460000
 #SBATCH --environment=/iopsstor/scratch/cscs/ahernnde/ncg_new_v2.toml
 #SBATCH --exclusive
-#SBATCH --dependency=singleton
 #SBATCH --no-requeue
 #SBATCH --partition=$PARTITION
 $MAYBE_SIGNAL
+$MAYBE_DEPENDENCY
 
 # Wake up.
 echo [\$(date)] Starting job

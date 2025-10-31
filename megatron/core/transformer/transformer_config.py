@@ -272,6 +272,7 @@ class TransformerConfig(ModelParallelConfig):
     latent_init: str = "identity"
     train_recurrence_method: str = "constant"
     n_latent_backwards: int = None
+    linear_latent_adapter_alpha: float = 1.0
 
     latent_init_std: float = math.sqrt(2/5)
 

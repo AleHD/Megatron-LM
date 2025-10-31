@@ -1070,6 +1070,17 @@ def load_args_from_checkpoint(
     _set_arg('input_embeddings_multiplier', force=True)
     _set_arg('use_rope_scaling', force=True)
 
+    _set_arg('n_recurrences', force=True)
+    _set_arg('n_encode_layers', force=True)
+    _set_arg('n_think_layers', force=True)
+    _set_arg('n_decode_layers', force=True)
+    _set_arg('latent_init', force=True)
+    _set_arg('think_adapter', force=True)
+    _set_arg('train_recurrence_method', force=True)
+    _set_arg('n_latent_backwards', force=True)
+    _set_arg('linear_latent_adapter_alpha', force=True)
+
+
     # Model parallelism args.
     if args.use_mp_args_from_checkpoint_args:
         if checkpoint_version < 3.0:

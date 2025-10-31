@@ -46,6 +46,11 @@ class CoreSchema(ModelSchema):
                 "weight" : "binary_head.weight",
                 "bias" : "binary_head.bias",
             },
+
+            # Latent stuff.
+            "linear_latent_adapter": {
+                "weight": "decoder.latent_adapter.linear.weight",
+            },
         })
 
 

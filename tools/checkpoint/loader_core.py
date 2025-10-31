@@ -251,6 +251,18 @@ def _load_checkpoint(queue, args):
     md.checkpoint_args = checkpoint_args
     md.use_legacy_models = margs.use_legacy_models
 
+    md.n_recurrences=margs.n_recurrences
+    md.n_encode_layers=margs.n_encode_layers
+    md.n_think_layers=margs.n_think_layers
+    md.n_decode_layers=margs.n_decode_layers
+    md.latent_init=margs.latent_init
+    md.latent_init_std=margs.latent_init_std
+    md.think_adapter=margs.think_adapter
+    md.train_recurrence_method=margs.train_recurrence_method
+    md.n_latent_backwards=margs.n_latent_backwards
+    md.linear_latent_adapter_alpha=margs.linear_latent_adapter_alpha
+
+
     # Get first pipe stage.
     mpu.set_pipeline_model_parallel_rank(0)
     all_models = [get_models(tp_size, md.params_dtype)]
@@ -283,6 +295,10 @@ def _load_checkpoint(queue, args):
     else:
         assert embeddings[0]["pos"] is None
     queue_put("embeddings", message)
+
+    # Send latent adapter weight.
+    if md.think_adapter == "linear":
+        queue_put("adapter", {"adapter": schema.get("linear_latent_adapter", models[0])})
 
     # Send layers.
     total_layer_num = 0

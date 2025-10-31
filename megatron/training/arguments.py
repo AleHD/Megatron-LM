@@ -815,14 +815,14 @@ def validate_args(args, defaults={}):
 
     # Recurrence checks.
     assert args.n_recurrences >= 1
+    if args.n_latent_backwards is None:
+        args.n_latent_backwards = args.n_recurrences
     if args.n_recurrences > 1:
         assert args.n_encode_layers is not None and args.n_encode_layers >= 0
         assert args.n_think_layers is not None and args.n_think_layers >= 0
         assert args.n_decode_layers is not None and args.n_decode_layers >= 0
         assert args.num_layers == args.n_encode_layers + args.n_think_layers + args.n_decode_layers
         assert args.pipeline_model_parallel_size == 1
-        if args.n_latent_backwards is None:
-            args.n_latent_backwards = args.n_recurrences
     else:
         args.n_encode_layers = 0
         args.n_think_layers = 0
@@ -1189,6 +1189,7 @@ def _add_network_size_args(parser):
     group.add_argument('--latent-init', default="identity", choices=latent.INITIALIZERS.keys())
     group.add_argument('--train-recurrence-method', default="constant", choices=latent.TIMES.keys())
     group.add_argument('--n-latent-backwards', type=int, default=None)
+    group.add_argument('--linear-latent-adapter-alpha', type=float, default=1.0)
 
     group.add_argument('--latent-init-std', default=math.sqrt(2/5))
     return parser

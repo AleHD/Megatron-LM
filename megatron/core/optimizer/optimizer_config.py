@@ -118,6 +118,10 @@ class OptimizerConfig:
     ademamix_alpha_warmup: Optional[int] = None
     """Number of warmup steps used to increase alpha."""
 
+    # Muon.
+    muon_match_rms: float = 0.2
+    muon_ns_steps: int = 5
+    muon_nesterov: bool = True
 
     #######################
     # Distributed optimizer

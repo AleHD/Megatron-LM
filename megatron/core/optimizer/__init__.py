@@ -2,6 +2,7 @@
 import logging
 from typing import Callable, Dict, List, Optional, Tuple
 
+from megatron.core.optimizer.muon import Muon
 import torch
 
 try:
@@ -116,18 +117,17 @@ def _get_param_groups(
             is_decoupled_lr = False
             # For input/embedding and output layer: embedding.word_embeddings.weight /
             # output_layer.weight.
-            if use_decoupled_learning_rate and getattr(
-                param, 'is_embedding_or_output_parameter', False
-            ):
+            is_embedding_or_output = getattr(param, 'is_embedding_or_output_parameter', False)
+            if use_decoupled_learning_rate and is_embedding_or_output:
                 is_decoupled_lr = True
 
-            key = (wd_mult, _lr_mult, is_expert_parallel, is_decoupled_lr)
+            key = (wd_mult, _lr_mult, is_expert_parallel, is_decoupled_lr, is_embedding_or_output)
             if key not in params_map:
                 params_map[key] = []
             params_map[key].append(param)
 
     param_groups = []
-    for (wd_mult, _lr_mult, is_expert_parallel, is_decoupled_lr), params in params_map.items():
+    for (wd_mult, _lr_mult, is_expert_parallel, is_decoupled_lr, is_embedding_or_output), params in params_map.items():
         assert len(params) > 0
         param_group = {
             'params': params,
@@ -135,6 +135,7 @@ def _get_param_groups(
             'lr_mult': _lr_mult,
             'is_expert_parallel': is_expert_parallel,
             'is_decoupled_lr': is_decoupled_lr,
+            'is_embedding_or_output': is_embedding_or_output,
         }
         param_groups.append(param_group)
 
@@ -327,6 +328,33 @@ def _get_megatron_optimizer_based_on_param_groups(
                                 opt.state[p]['exp_avg_fast'] = torch.zeros_like(p.data)
                             opt.state[p]['exp_avg_slow'] = torch.zeros_like(p.data)
                             opt.state[p]['exp_avg_sq'] = torch.zeros_like(p.data)
+                        else:
+                            opt.initialize_state(p)
+
+        elif config.optimizer == 'muon':
+            kwargs = {
+                "params": param_groups,
+                "lr": config.lr,
+                "weight_decay": config.weight_decay,
+                "momentum": config.sgd_momentum,
+                "match_rms": config.muon_match_rms,
+                "ns_steps": config.muon_ns_steps,
+                "adamw_betas": (config.adam_beta1, config.adam_beta2),
+                "adamw_eps": config.adam_eps,
+                "nesterov": config.muon_nesterov,
+            }
+            optimizer = Muon(**kwargs)
+
+            def init_state_fn(opt, config=None):
+                for group in opt.param_groups:
+                    for p in group['params']:
+                        if len(opt.state[p]) == 0:
+                            use_muon = p.ndim >= 2 and not group["is_embedding_or_output"]
+                            if use_muon:
+                                opt.state[p]["muon_buffer"] = torch.zeros_like(p)
+                            else:
+                                opt.state[p]["adamw_exp_avg"] = torch.zeros_like(g)
+                                opt.state[p]["adamw_exp_avg_sq"] = torch.zeros_like(g)
                         else:
                             opt.initialize_state(p)
 

@@ -14,6 +14,8 @@ TRAIN_RECURRENCE_METHOD=constant
 LINEAR_ADAPTER_ALPHA=1.0
 LATENT_MASKER=none
 LATENT_MASKER_TOPK=128
+FROM_SCRATCH=false
+OPTIMIZER=ademamix
 
 NEW_WEIGHTS=false
 
@@ -44,13 +46,16 @@ DATASETS=(
 # Prints usage of the script.
 usage () {
 	echo "Usage: submit.sh <size>"
-	echo "<size>: 1/3/8/70"
+	echo "<size>: 390/1/3/8/70"
 	echo "Variables:"
 	# Cluster settings.
 	echo "--debug: Runs in debug nodes."
 	echo "--nodes <int>: Runs with this many nodes."
 	# Data settings.
 	echo "--iters <int>: Number of iterations to run."
+	echo "--scratch: Train from scratch."
+	# Optimizer settings.
+	echo "--opt <adam/ademamix/muon>"
 	# Recurrence settings.
 	echo "--n-recurrences <int>: Default number of recurrences."
 	echo "--n-encode <int>: Number of encode layers."
@@ -81,7 +86,22 @@ fi
 SIZE=$1
 shift
 
-if [[ $SIZE = 1 ]]; then
+if [[ $SIZE = 390 ]]; then
+	# Arch.
+	NUM_LAYERS=16
+	HIDDEN_SIZE=1024
+	FFN_SIZE=6144
+	NUM_HEADS=8
+	NUM_QUERY_GROUPS=4
+	ROPE_FACTOR=32
+	# Opt.
+	MBS=${MBS:-8}
+	GBS=128
+	DEFAULT_ITERS=100000
+	SAVE_INTERVAL=10000
+	LR=0.001
+	MIN_LR=0.0001
+elif [[ $SIZE = 1 ]]; then
 	# Arch.
 	NUM_LAYERS=16
 	HIDDEN_SIZE=2048
@@ -116,6 +136,9 @@ while [[ $# -gt 0 ]]; do
 		--nodes) NODES=$2; shift 2;;
 		# Data settings.
 		--iters) ITERS=$2; shift 2;;
+		--scratch) FROM_SCRATCH=true; shift;;
+		# Optimizer settings.
+		--opt) OPTIMIZER=$2; shift 2;;
 		# Recurrence settings.
 		--n-recurrences) N_RECURRENCES=$2; shift 2;;
 		--n-encode) N_ENCODE=$2; shift 2;;
@@ -132,8 +155,16 @@ while [[ $# -gt 0 ]]; do
 	esac
 done
 
+
 #= Resolve Args =#
 EXTRA_ARGS=()
+if [[ $SIZE = 390 ]] && [[ $FROM_SCRATCH = false ]]; then
+	PRINT_USAGE=false die Model with size $SIZE has no ckpt to load from.
+fi
+if [[ $SIZE != 390 ]]; then
+	EXTRA_ARGS=( --untie-embeddings-and-output-weights)
+fi
+
 if [[ $N_RECURRENCES -eq 1 ]]; then
 	MODEL_BASE=Apertus
 	MODEL_BASE_SUFFIX=""
@@ -157,7 +188,7 @@ else
 	fi
 fi
 
-if [[ $MODEL_BASE != Ping ]]; then
+if [[ $MODEL_BASE != Ping ]] && [[ $OPTIMIZER != muon ]]; then
 	EXTRA_ARGS+=(--overlap-param-gather)
 fi
 
@@ -167,7 +198,12 @@ if [ -z ${ITERS+x} ]; then
 elif [[ $ITERS -ne $DEFAULT_ITERS ]]; then
 	SUFFIX+=(it$ITERS)
 fi
-TRAINING_STEPS=$(($ITERS + $STEP_LOAD_IF_UNRESOLVED))
+if [ $FROM_SCRATCH = true ]; then
+	TRAINING_STEPS=$ITERS
+	SUFFIX+=(scratch)
+else
+	TRAINING_STEPS=$(($ITERS + $STEP_LOAD_IF_UNRESOLVED))
+fi
 
 if [[ $N_RECURRENCES -gt 1 ]]; then
 	EXTRA_ARGS+=(
@@ -210,6 +246,20 @@ if [[ $N_RECURRENCES -gt 1 ]]; then
 	fi
 fi
 
+if [[ $OPTIMIZER = adam ]]; then
+	BETA2=0.95
+	SUFFIX+=(adam)
+	EXTRA_ARGS+=(--use-distributed-optimizer)
+elif [[ $OPTIMIZER = ademamix ]]; then
+	BETA2=0.999
+	EXTRA_ARGS+=(--use-distributed-optimizer)
+elif [[ $OPTIMIZER = muon ]]; then
+	BETA2=0.95
+	SUFFIX+=(muon)
+else
+	dia Unknown optimizer $OPTIMIZER
+fi
+
 # Get important directory names.
 if (( ${#SUFFIX} == 0 )); then
 	SUFFIX=""
@@ -232,26 +282,33 @@ TENSORBOARD_DIR=$EXP_DIR/tensorboard
 WANDB_DIR=$EXP_DIR/wandb
 
 mkdir -p $TRIGGER_DIR
+mkdir -p $CKPT_DIR
 
 # Resolve the --load, in case the current CKPT_DIR doesn't exist.
-if [ ! -f $CKPT_DIR/latest_checkpointed_iteration.txt ]; then
-	mkdir -p $CKPT_DIR
-	echo Run not found, creating symlink from source at iter $STEP_LOAD_IF_UNRESOLVED
-	echo $STEP_LOAD_IF_UNRESOLVED > $CKPT_DIR/latest_checkpointed_iteration.txt
-	ln -s $CKPT_LOAD_IF_UNRESOLVED/iter_$STEP_LOAD_IF_UNRESOLVED $CKPT_DIR/iter_$STEP_LOAD_IF_UNRESOLVED
-fi
-if [ $FIX_XIELU_IF_UNRESOLVED = true ]; then
-	MAYBE_ADD_XIELU_FIX="EXTRA_ARGS=\\\"\\\$EXTRA_ARGS --fix-old-xielu\\\""
-fi
-if [ $NEW_WEIGHTS = true ]; then
-	MAYBE_NONSTRICT_LOAD="EXTRA_ARGS=\\\"\\\$EXTRA_ARGS --dist-ckpt-strictness ignore_all --no-load-optim\\\""
+if [[ $FROM_SCRATCH = false ]]; then
+	if [ ! -f $CKPT_DIR/latest_checkpointed_iteration.txt ]; then
+		echo Run not found, creating symlink from source at iter $STEP_LOAD_IF_UNRESOLVED
+		echo $STEP_LOAD_IF_UNRESOLVED > $CKPT_DIR/latest_checkpointed_iteration.txt
+		ln -s $CKPT_LOAD_IF_UNRESOLVED/iter_$STEP_LOAD_IF_UNRESOLVED $CKPT_DIR/iter_$STEP_LOAD_IF_UNRESOLVED
+	fi
+	if [ $FIX_XIELU_IF_UNRESOLVED = true ]; then
+		MAYBE_ADD_XIELU_FIX="EXTRA_ARGS=\\\"\\\$EXTRA_ARGS --fix-old-xielu\\\""
+	fi
+	if [ $NEW_WEIGHTS = true ]; then
+		MAYBE_NONSTRICT_LOAD="EXTRA_ARGS=\\\"\\\$EXTRA_ARGS --dist-ckpt-strictness ignore_all --no-load-optim\\\""
+	fi
+	WARMUP_ITERS=2000
+	COOLDOWN_ITERS=$ITERS
+else
+	WARMUP_ITERS=$((ITERS/20))
+	COOLDOWN_ITERS=$((ITERS/10))
 fi
 
 # Determine partition.
 IFS=: read -r T_H T_M T_S <<< "$time"
 TIME_MINS=$((10#$T_H * 60 + 10#$T_M + (10#$T_S + 59) / 60))
 if [[ $DEBUG = true ]] && ((TIME_MINS*NODES < 90)) && [[ $NODES -le 4 ]]; then
-	PARTITION=debug
+	PARTITION=normal
 else
 	PARTITION=normal
 	MAYBE_SIGNAL="#SBATCH --signal=SIGUSR2@600"
@@ -280,7 +337,6 @@ NETWORK_SIZE_ARGS=(
 	--xielu
 	--qk-layernorm
 	--qknorm-impl apex
-	--untie-embeddings-and-output-weights
 	--disable-bias-linear
 )
 
@@ -307,11 +363,12 @@ REGULARIZATION_ARGS=(
 	--weight-decay 0.1
 	--clip-grad 0.1
 	--adam-beta1 0.9
-	--adam-beta2 0.999
+	--adam-beta2 $BETA2
 	--ademamix-alpha 8
 	--ademamix-beta3 0.9999
-	--ademamix-beta3-warmup 100000
-	--ademamix-alpha-warmup 100000
+	--ademamix-beta3-warmup 10000
+	--ademamix-alpha-warmup 10000
+	--sgd-momentum 0.95  # Muon-only.
 )
 
 TRAINING_ARGS=(
@@ -319,7 +376,7 @@ TRAINING_ARGS=(
 	--global-batch-size $GBS
 	--train-iters $TRAINING_STEPS
 	--cross-entropy-loss-fusion
-	--optimizer ademamix
+	--optimizer $OPTIMIZER
 	--dataloader-type single
 	--manual-gc
 	--manual-gc-interval 500
@@ -336,9 +393,9 @@ LEARNING_RATE_ARGS=(
 	--lr $LR
 	--min-lr $MIN_LR
 	--lr-decay-style WSD
-	--lr-warmup-iters 2000
+	--lr-warmup-iters $WARMUP_ITERS
 	--lr-wsd-decay-style 1-sqrt
-	--lr-wsd-decay-iters $ITERS
+	--lr-wsd-decay-iters $COOLDOWN_ITERS
 )
 
 CHECKPOINTING_ARGS=(
@@ -356,7 +413,6 @@ MIXED_PRECISION_ARGS=(
 DISTRIBUTED_ARGS=(
 	--tensor-model-parallel-size 1
 	--pipeline-model-parallel-size 1
-	--use-distributed-optimizer
 	--overlap-grad-reduce
 )
 

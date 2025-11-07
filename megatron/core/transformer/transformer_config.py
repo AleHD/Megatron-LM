@@ -276,6 +276,9 @@ class TransformerConfig(ModelParallelConfig):
 
     latent_init_std: float = math.sqrt(2/5)
 
+    latent_masker: str = "none"
+    latent_topk_masker_k: int = 128
+
     ####################
     # MoE related
     ####################

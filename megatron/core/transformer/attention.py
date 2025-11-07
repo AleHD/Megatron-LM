@@ -1,10 +1,15 @@
 # Copyright (c) 2023, NVIDIA CORPORATION. All rights reserved.
 from abc import ABC, abstractmethod
+import math
+from pathlib import Path
+
+from numpy import core, mean
 from dataclasses import dataclass
 from typing import Tuple, Union
 
 import torch
 from torch import Tensor
+from torch.nn.attention.flex_attention import BlockMask, flex_attention
 
 from megatron.core import InferenceParams, parallel_state, tensor_parallel
 from megatron.core.models.common.embeddings.rope_utils import (
@@ -343,6 +348,8 @@ class Attention(MegatronModule, ABC):
         attention_bias=None,
         packed_seq_params=None,
         sequence_len_offset=None,
+        return_scores=False,
+        mask_type=None,
     ):
         """
         Perform a forward pass through the attention module.
@@ -443,6 +450,9 @@ class Attention(MegatronModule, ABC):
         # core attention computation
         # ==================================
 
+        scores = None
+        if mask_type is not None:
+            attn_mask_type = mask_type
         if self.checkpoint_core_attention and self.training:
             core_attn_out = self._checkpointed_attention_forward(
                 query,
@@ -454,15 +464,22 @@ class Attention(MegatronModule, ABC):
                 packed_seq_params=packed_seq_params,
             )
         else:
-            core_attn_out = self.core_attention(
-                query,
-                key,
-                value,
-                attention_mask,
-                attn_mask_type=attn_mask_type,
-                attention_bias=attention_bias,
-                packed_seq_params=packed_seq_params,
-            )
+            # Q.size = torch.Size([4096, 3, 8, 64])
+            # mask.size = torch.Size([3, 1, 4096, 4096])
+            if return_scores:  # Use slow attention to get raw attention scores.
+                core_attn_out, scores = naive_attn(query, key, value, attention_mask)
+            elif isinstance(mask_type, BlockMask):
+                core_attn_out = flex_attn(query, key, value, mask_type)
+            else:
+                core_attn_out = self.core_attention(
+                    query,
+                    key,
+                    value,
+                    attention_mask,
+                    attn_mask_type=attn_mask_type,
+                    attention_bias=attention_bias,
+                    packed_seq_params=packed_seq_params,
+                )
 
         if packed_seq_params is not None and packed_seq_params.qkv_format == 'thd':
             # reshape to same output shape as unpacked case
@@ -477,7 +494,50 @@ class Attention(MegatronModule, ABC):
 
         output, bias = self.linear_proj(core_attn_out)
 
-        return output, bias
+        return output, bias, scores
+
+
+@torch.compile
+def naive_attn(
+        query, key, value, # (S, B, nh, hd).
+        attn_mask,  # (B, 1, S, S).
+        ):
+    dtype = query.dtype
+    query = query.permute(1, 2, 0, 3)
+    key = key.permute(1, 2, 0, 3)
+    value = value.permute(1, 2, 0, 3)
+    attn_mask = ~attn_mask
+
+    L, S = query.size(-2), key.size(-2)
+    scale_factor = 1 / math.sqrt(query.size(-1)) 
+
+    assert attn_mask.dtype == torch.bool
+    attn_bias = torch.zeros(query.size(0), 1, L, S, dtype=query.dtype, device=query.device)
+    attn_bias.masked_fill_(attn_mask.logical_not(), float("-inf"))
+
+    # GQA.
+    key = key.repeat_interleave(query.size(-3)//key.size(-3), -3)
+    value = value.repeat_interleave(query.size(-3)//value.size(-3), -3)
+
+    attn_weight = query @ key.transpose(-2, -1) * scale_factor
+    attn_weight += attn_bias
+    probas = torch.softmax(attn_weight, dim=-1)
+
+    attn_out = probas @ value  # (B, nh, S, hd).
+    attn_out = attn_out.permute(2, 0, 1, 3)
+    attn_out = attn_out.reshape(S, query.size(0), -1)
+    return attn_out.to(dtype), attn_weight.to(dtype)
+
+
+def flex_attn(query, key, value, block_mask):
+    S = query.size(0)
+    query = query.permute(1, 2, 0, 3)
+    key = key.permute(1, 2, 0, 3)
+    value = value.permute(1, 2, 0, 3)
+    attn_out = flex_attention(query, key, value, block_mask=block_mask, enable_gqa=True)
+    attn_out = attn_out.permute(2, 0, 1, 3)
+    attn_out = attn_out.reshape(S, query.size(0), -1)
+    return attn_out
 
 
 class SelfAttention(Attention):

@@ -1079,6 +1079,8 @@ def load_args_from_checkpoint(
     _set_arg('train_recurrence_method', force=True)
     _set_arg('n_latent_backwards', force=True)
     _set_arg('linear_latent_adapter_alpha', force=True)
+    _set_arg('latent_masker', force=True)
+    _set_arg('latent_topk_masker_k', force=True)
 
 
     # Model parallelism args.

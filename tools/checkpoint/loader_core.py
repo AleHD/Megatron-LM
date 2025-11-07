@@ -261,6 +261,8 @@ def _load_checkpoint(queue, args):
     md.train_recurrence_method=margs.train_recurrence_method
     md.n_latent_backwards=margs.n_latent_backwards
     md.linear_latent_adapter_alpha=margs.linear_latent_adapter_alpha
+    md.latent_masker = margs.latent_masker
+    md.latent_topk_masker_k = margs.latent_topk_masker_k
 
 
     # Get first pipe stage.

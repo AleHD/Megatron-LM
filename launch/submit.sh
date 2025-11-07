@@ -12,6 +12,8 @@ LATENT_INIT=identity
 THINK_ADAPTER=none
 TRAIN_RECURRENCE_METHOD=constant
 LINEAR_ADAPTER_ALPHA=1.0
+LATENT_MASKER=none
+LATENT_MASKER_TOPK=128
 
 NEW_WEIGHTS=false
 
@@ -59,6 +61,8 @@ usage () {
 	echo "--train-recurrence-method <constant/poisson>"
 	echo "--n-backwards <int>"
 	echo "--linear-adapter-alpha <int>"
+	echo "--latent-masker <none/topk>"
+	echo "--latent-topk-masker-k <int>"
 }
 
 # Prints error message and then exit 1.
@@ -86,7 +90,7 @@ if [[ $SIZE = 1 ]]; then
 	NUM_QUERY_GROUPS=8
 	ROPE_FACTOR=32
 	# Opt.
-	MBS=3
+	MBS=${MBS:-3}
 	GBS=504
 	DEFAULT_ITERS=25000
 	SAVE_INTERVAL=1000
@@ -106,7 +110,6 @@ while [[ $# -gt 0 ]]; do
 		# Cluster settings.
 		--debug)
 			SCRIPT_VERSION=$SCRIPT_VERSION-debug
-			NODES=1
 			TIME=00:30:00
 			DEBUG=true
 			shift;;
@@ -123,6 +126,8 @@ while [[ $# -gt 0 ]]; do
 		--train-recurrence-method) TRAIN_RECURRENCE_METHOD=$2; shift 2;;
 		--n-backwards) N_BACKWARDS=$2; shift 2;;
 		--linear-adapter-alpha) LINEAR_ADAPTER_ALPHA=$2; shift 2;;
+		--latent-masker) LATENT_MASKER=$2; shift 2;;
+		--latent-topk-masker-k) LATENT_MASKER_TOPK=$2; shift 2;;
 		*) die Invalid argument $1
 	esac
 done
@@ -152,11 +157,7 @@ else
 	fi
 fi
 
-if [[ $MODEL_BASE = Ping ]]; then
-	if [[ $SIZE = 1 ]]; then
-		MBS=3
-	fi
-else
+if [[ $MODEL_BASE != Ping ]]; then
 	EXTRA_ARGS+=(--overlap-param-gather)
 fi
 
@@ -180,6 +181,8 @@ if [[ $N_RECURRENCES -gt 1 ]]; then
 		--train-recurrence-method $TRAIN_RECURRENCE_METHOD
 		--n-latent-backwards $N_BACKWARDS
 		--linear-latent-adapter-alpha $LINEAR_ADAPTER_ALPHA
+		--latent-masker $LATENT_MASKER
+		--latent-topk-masker-k $LATENT_MASKER_TOPK
 	)
 
 	if [[ $MODEL_BASE != ETP ]] && [[ $MODEL_BASE != Ping ]]; then  # Then we need to specify, latent init, adatper and method in the suffix.
@@ -191,6 +194,12 @@ if [[ $N_RECURRENCES -gt 1 ]]; then
 		fi
 		if [[ $TRAIN_RECURRENCE_METHOD != constant ]]; then
 			SUFFIX+=(rec_$TRAIN_RECURRENCE_METHOD)
+		fi
+	fi
+	if [[ $LATENT_MASKER != none ]]; then
+		SUFFIX+=(masker_$LATENT_MASKER)
+		if [[ $LATENT_MASKER_TOPK != 128 ]]; then
+			SUFFIX+=($LATENT_MASKER_TOPK)
 		fi
 	fi
 	if [[ $LINEAR_ADAPTER_ALPHA != 1.0 ]]; then
@@ -282,7 +291,6 @@ LOGGING_ARGS=(
 	--no-log-loss-scale-to-tensorboard
 	--log-memory-to-tensorboard
 	--wandb-project $PROJECT_NAME
-	--wandb-exp-name $EXP_NAME
 	--wandb-save-dir $WANDB_DIR
 	--log-interval 1
 	--timing-log-level 1
@@ -362,7 +370,6 @@ DATA_ARGS=(
 	--split 100,0,0
 	--seq-length $SEQ_LEN
 	--reset-position-ids
-	--reset-attention-mask 
 	--eod-mask-loss
 	--num-workers 4
 	--num-dataset-builder-threads 1
@@ -458,6 +465,7 @@ srun --cpus-per-task \$SLURM_CPUS_PER_TASK -lu bash -c "
 		$MAYBE_ADD_XIELU_FIX
 		$MAYBE_NONSTRICT_LOAD
 	fi
+	EXTRA_ARGS=\"\\\$EXTRA_ARGS --wandb-exp-name $EXP_NAME-j\\\$SLURM_JOBID\"
 
 	RANK=\\\$SLURM_PROCID LOCAL_RANK=\\\$SLURM_LOCALID $CMD \\\$EXTRA_ARGS $ARGS
 "

@@ -8,8 +8,10 @@ from dataclasses import dataclass
 from typing import List, Optional, Union
 
 from megatron.core.transformer import latent
+from megatron.core.transformer.enums import AttnMaskType
 import torch
 from torch import Tensor
+from torch.nn.attention.flex_attention import create_block_mask
 
 from megatron.core import InferenceParams, parallel_state, tensor_parallel
 from megatron.core.dist_checkpointing.mapping import ShardedStateDict
@@ -272,6 +274,7 @@ class TransformerBlock(MegatronModule):
         self.latent_adapter = latent.ADAPTERS[self.config.think_adapter](self.config)
         self.latent_init = latent.INITIALIZERS[self.config.latent_init](self.config)
         self.latent_timer = latent.TIMES[self.config.train_recurrence_method](self.config)
+        self.latent_masker = latent.MASKERS[self.config.latent_masker](self.config)
 
     def _build_layers(self):
         # Transformer layers.
@@ -541,7 +544,7 @@ class TransformerBlock(MegatronModule):
         global_tracker = get_tracker()
         with rng_context, fp8_context:
             # Forward pass.
-            def f(hidden_states, context, layer):
+            def f(hidden_states, context, layer, return_scores=False, mask_type=None):
                 if self.config.recompute_granularity == 'full' and self.training:
                     hidden_states = self._checkpointed_forward(
                         hidden_states=hidden_states,
@@ -556,7 +559,7 @@ class TransformerBlock(MegatronModule):
                     with self.offload_context:
                         layer.use_cudagraph = True
                         if (len(self.cuda_graphs) == 0) or (not self.training):
-                            hidden_states, context = layer(
+                            hidden_states, context, scores = layer(
                                 hidden_states=hidden_states,
                                 attention_mask=attention_mask,
                                 context=context,
@@ -568,6 +571,8 @@ class TransformerBlock(MegatronModule):
                                 inference_params=inference_params,
                                 packed_seq_params=packed_seq_params,
                                 sequence_len_offset=sequence_len_offset,
+                                return_scores=return_scores,
+                                mask_type=mask_type,
                             )
                         else:
                             # CUDA graph replay for layer `l_no` and microbatch
@@ -599,7 +604,7 @@ class TransformerBlock(MegatronModule):
                         and self.group_prefetch_offload_commit_async is not None
                     ):
                         hidden_states = self.group_prefetch_offload_commit_async(hidden_states)
-                return hidden_states, context
+                return hidden_states, context, scores
 
             # Useful recurrence-related variables.
             enc_i0 = 0
@@ -608,40 +613,59 @@ class TransformerBlock(MegatronModule):
 
             # Run encode block.
             for l_no in range(enc_i0, think_i0):
-                hidden_states, context = f(hidden_states, context, self.layers[l_no])
+                hidden_states, context, _ = f(hidden_states, context, self.layers[l_no])
 
             # Prepare for thinking block.
             latent_states = self.latent_init(hidden_states)
             n_recurrences = self.latent_timer()
             dynamic_n_recurrences = float("inf")
             recursion_idx = 0
+            original_attention_mask = attention_mask
+            mask_type = None
 
             # Run thinking block.
             while recursion_idx < min(n_recurrences, dynamic_n_recurrences):
+                # Masker checks.
+                return_scores = recursion_idx == 0 and self.latent_masker.requires_attn_scores
+                if recursion_idx == 1:
+                    # Use scores_agg created previous iteration.
+                    with torch.no_grad():
+                        maybe_new_mask = self.latent_masker(attn_scores=scores_agg)
+                    if maybe_new_mask is not None:
+                        attention_mask = maybe_new_mask
+                        mask_type = AttnMaskType.arbitrary
+
                 # Adapter.
                 latent_states_prev = latent_states
                 latent_states = self.latent_adapter(hidden_states, latent_states)
 
                 # Forward.
+                scores_agg = None
                 if recursion_idx + self.config.n_latent_backwards < min(n_recurrences, dynamic_n_recurrences):
                     ctx = torch.no_grad()
                 else:
                     ctx = nullcontext()
                 with ctx:
                     for l_no in range(think_i0, dec_i0):
-                        latent_states, context = f(latent_states, context, self.layers[l_no])
+                        latent_states, context, maybe_scores = f(
+                            latent_states, context, self.layers[l_no],
+                            return_scores=return_scores, mask_type=mask_type,
+                        )
+                        scores_agg = self.latent_masker.aggregate_scores(scores_agg, maybe_scores)
 
                 # Early exit.
                 if not math.isinf(dynamic_n_recurrences) and self.latent_timer.early_exit(latent_states, latent_states_prev):
                     dynamic_n_recurrences = recursion_idx + self.config.n_latent_backwards
                 recursion_idx += 1
+
             assert recursion_idx == min(n_recurrences, dynamic_n_recurrences)
             n_recurrences = recursion_idx
             hidden_states = latent_states
+            attention_mask = original_attention_mask
 
             # Run decode block.
             for l_no in range(dec_i0, self.config.num_layers):
-                hidden_states, context = f(hidden_states, context, self.layers[l_no])
+                hidden_states, context, _ = f(hidden_states, context, self.layers[l_no])
 
             # Update metrics.
             num_recurrences_tensor = torch.full((hidden_states.size(1),), n_recurrences, dtype=torch.bfloat16, device=hidden_states.device)

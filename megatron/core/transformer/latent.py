@@ -91,7 +91,7 @@ class PoissonTimes(LatentTimes):
 
 
 #= Latent Refiner =#
-class LatentRefiner(nn.Module, ABC):
+class LatentMasker(nn.Module, ABC):
     def __init__(self, config: TransformerConfig):
         super().__init__()
         self.config = config
@@ -100,56 +100,48 @@ class LatentRefiner(nn.Module, ABC):
     @abstractmethod
     def forward(
         self,
-        hidden_states: torch.Tensor,  # (S, B, H).
-        latent_states: torch.Tensor,  # (S, B, H).
-        attention_mask: torch.Tensor, # (B, 1, S, S).
-        rotary_pos_embed: torch.Tensor,  # (B, 1, 1, freq).
-        attn_scores: Optional[torch.Tensor] = None, # (B, nheads, S, S).
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        attn_scores: Optional[torch.Tensor] = None,
+    ) -> Optional[torch.Tensor]:  # bool(B, 1, S, S).
         pass
 
-    @abstractmethod
-    def rejoin(self, hidden_states, latent_states) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        pass
+    def aggregate_scores(self, agg: Optional[torch.Tensor], scores: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
+        return None
 
 
-class NoLatentRefiner(LatentRefiner):
+
+class NoLatentMasker(LatentMasker):
+    def forward(self, attn_scores=None):
+        return None
+
+
+class TopkSeqLatentMasker(LatentMasker):
     def __init__(self, config: TransformerConfig):
         super().__init__(config)
-        self.refined = False
-
-    def forward(self, hidden_states, latent_states, attention_mask, rotary_pos_embed, attn_scores=None):
-        assert not self.refined
-        self.refined = True
-        self.attention_mask = attention_mask
-        self.rotary_pos_embed = rotary_pos_embed
-        return hidden_states, latent_states, attention_mask, rotary_pos_embed
-
-    def rejoin(self, hidden_states, latent_states):
-        assert self.refined
-        self.refined = False
-        return hidden_states, latent_states, self.attention_mask, self.rotary_pos_embed
-
-
-class TopkSeqLatentRefiner(LatentRefiner):
-    def __init__(self, config: TransformerConfig):
-        super().__init__(config)
-        self.refined = False
         self.requires_attn_scores = True
 
-    def forward(self, hidden_states, latent_states, attention_mask, rotary_pos_embed, attn_scores=None):
+    # scores=(B, S, S).
+    def forward(self, attn_scores=None):
         assert attn_scores is not None
-        assert not self.refined
-        self.refined = True
-        self.hidden_states = hidden_states
-        self.latent_states = latent_states
-        self.attention_mask = attention_mask
-        self.rotary_pos_embed = rotary_pos_embed
-        self.attn_scores = attn_scores  
+        aggregated_scores = attn_scores
+        #aggregated_scores = torch.sum(attn_scores, dim=(0, 2))  # (B, S, S).
+        _, idx = torch.topk(aggregated_scores, self.config.latent_topk_masker_k, dim=2)
+        B, S, _ = aggregated_scores.size()
+        newmask = torch.ones(B, S, S, device=attn_scores.device, dtype=torch.bool)
+        newmask = torch.scatter(newmask, 1, idx, torch.zeros_like(newmask))
+        for i in range(self.config.latent_topk_masker_k + 1):  # No peaking into the future.
+            newmask[:, i, i + 1:] = True
+        return newmask[:, None, :, :]
 
-        attn_scores = torch.sum(attn_scores, dim=1)  # (B, S, S).
-
-
+    # scores=(B,nheads,S,S)
+    def aggregate_scores(self, agg, scores):
+        if scores is None:
+            return agg
+        scores = scores.detach()
+        scores = torch.mean(scores, dim=1)/self.config.n_think_layers
+        if agg is None:
+            return scores
+        return agg + scores
+        
 
 ADAPTERS = {
     "none": NullLatentAdapter,
@@ -164,4 +156,9 @@ INITIALIZERS = {
 TIMES = {
     "constant": ConstantTimes,
     "poisson": PoissonTimes,
+}
+
+MASKERS = {
+    "none": NoLatentMasker,
+    "topk": TopkSeqLatentMasker,
 }

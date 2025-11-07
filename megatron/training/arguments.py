@@ -1192,6 +1192,9 @@ def _add_network_size_args(parser):
     group.add_argument('--linear-latent-adapter-alpha', type=float, default=1.0)
 
     group.add_argument('--latent-init-std', default=math.sqrt(2/5))
+
+    group.add_argument('--latent-masker', default="none", choices=latent.MASKERS.keys())
+    group.add_argument('--latent-topk-masker-k', type=int, default=128)
     return parser
 
 

@@ -355,6 +355,8 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
         inference_params=None,
         packed_seq_params=None,
         sequence_len_offset=None,
+        return_scores=False,
+        mask_type=None,
     ):
         """
         Perform a forward pass through the transformer layer.
@@ -392,7 +394,7 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
             input_layernorm_output = hidden_states
 
         # Self attention.
-        attention_output, bias = self.self_attention(
+        attention_output, bias, maybe_scores = self.self_attention(
             input_layernorm_output,
             attention_mask=attention_mask,
             inference_params=inference_params,
@@ -402,6 +404,8 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
             attention_bias=attention_bias,
             packed_seq_params=packed_seq_params,
             sequence_len_offset=sequence_len_offset,
+            return_scores=return_scores,
+            mask_type=mask_type,
         )
 
         if self.config.post_layer_norm:
@@ -475,7 +479,7 @@ class TransformerLayer(MegatronModule, BaseTransformerLayer):
         # CUDA graph requires returned values to be Tensors
         if self.config.external_cuda_graph and self.training:
             return output
-        return output, context
+        return output, context, maybe_scores
 
     def sharded_state_dict(
         self, prefix: str = '', sharded_offsets: tuple = (), metadata: Optional[dict] = None

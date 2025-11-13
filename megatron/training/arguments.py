@@ -1275,7 +1275,7 @@ def _add_logging_args(parser):
                        'number of floating-point operations) to progress.txt file in checkpoint '
                        'directory.')
     group.add_argument("--log-global-metrics", nargs="+", default=[],
-                       choices=["num_recurrences"])
+                       choices=["num_recurrences", "last_latent_update_delta"])
     group.add_argument('--timing-log-level', type=int,
                        default=0, choices=range(0,3),
                        help='Granularity level to measure and report timing. '

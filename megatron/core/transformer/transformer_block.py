@@ -622,6 +622,7 @@ class TransformerBlock(MegatronModule):
             recursion_idx = 0
             original_attention_mask = attention_mask
             mask_type = None
+            avg_diff_update = None
 
             # Run thinking block.
             while recursion_idx < min(n_recurrences, dynamic_n_recurrences):
@@ -656,6 +657,10 @@ class TransformerBlock(MegatronModule):
                 # Early exit.
                 if not math.isinf(dynamic_n_recurrences) and self.latent_timer.early_exit(latent_states, latent_states_prev):
                     dynamic_n_recurrences = recursion_idx + self.config.n_latent_backwards
+
+                if recursion_idx + 1 == min(n_recurrences, dynamic_n_recurrences):
+                    with torch.no_grad():
+                        avg_diff_update = torch.mean(torch.linalg.vector_norm(latent_states - latent_states_prev, dim=-1), dim=0)
                 recursion_idx += 1
 
             assert recursion_idx == min(n_recurrences, dynamic_n_recurrences)
@@ -670,6 +675,8 @@ class TransformerBlock(MegatronModule):
             # Update metrics.
             num_recurrences_tensor = torch.full((hidden_states.size(1),), n_recurrences, dtype=torch.bfloat16, device=hidden_states.device)
             global_tracker.update(num_recurrences_tensor, "num_recurrences")
+            if avg_diff_update is not None:
+                global_tracker.update(avg_diff_update, "last_latent_update_delta")
 
         # Final layer norm.
         if self.final_layernorm is not None:

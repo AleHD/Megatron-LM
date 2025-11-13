@@ -4,7 +4,7 @@ import torch
 from megatron.core import parallel_state
 
 class GlobalTracker:
-    known_metrics = {"num_recurrences"}
+    known_metrics = {"num_recurrences", "last_latent_update_delta"}
 
     def __init__(self, args, metrics: Optional[list[str]] = None):
         if metrics is None:
@@ -30,7 +30,6 @@ class GlobalTracker:
 
     def enable(self):
         self.enabled = True
-
 
     @torch.no_grad()
     def update(self, x: torch.Tensor, name: str):

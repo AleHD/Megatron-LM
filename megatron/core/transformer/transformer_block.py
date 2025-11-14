@@ -8,10 +8,12 @@ from dataclasses import dataclass
 from typing import List, Optional, Union
 
 from megatron.core.transformer import latent
+from megatron.core.transformer.deep_mlp import DeepMLP
 from megatron.core.transformer.enums import AttnMaskType
+from megatron.training.activations import XIELU
 import torch
+from torch import nn
 from torch import Tensor
-from torch.nn.attention.flex_attention import create_block_mask
 
 from megatron.core import InferenceParams, parallel_state, tensor_parallel
 from megatron.core.dist_checkpointing.mapping import ShardedStateDict
@@ -275,6 +277,24 @@ class TransformerBlock(MegatronModule):
         self.latent_init = latent.INITIALIZERS[self.config.latent_init](self.config)
         self.latent_timer = latent.TIMES[self.config.train_recurrence_method](self.config)
         self.latent_masker = latent.MASKERS[self.config.latent_masker](self.config)
+
+        if self.config.use_hamiltonian:
+            assert self.config.activation_func == XIELU
+            assert self.config.mlp_think
+            self.kinetic_block = DeepMLP(
+                self.config.hidden_size, 2*self.config.hidden_size, 1,
+                self.config.mlp_think_layers//2, lambda: self.config.activation_func(self.config)
+            )
+            self.potential_block = DeepMLP(
+                self.config.hidden_size, 2*self.config.hidden_size, 1,
+                self.config.mlp_think_layers//2, lambda: self.config.activation_func(self.config)
+            )
+            self.hamiltonian_adapter = latent.ADAPTERS[self.config.hamiltonian_adapter](self.config)
+        elif self.config.mlp_think:
+            self.mlp_think = DeepMLP(
+                self.config.hidden_size, 2*self.config.hidden_size, self.config.hidden_size,
+                self.config.mlp_think_layers, lambda: self.config.activation_func(self.config)
+            )
 
     def _build_layers(self):
         # Transformer layers.
@@ -610,6 +630,10 @@ class TransformerBlock(MegatronModule):
             enc_i0 = 0
             think_i0 = enc_i0 + self.config.n_encode_layers
             dec_i0 = think_i0 + self.config.n_think_layers
+            if self.config.use_hamiltonian:
+                ham_mask = torch.ones(hidden_states.size(0), hidden_states.size(0),
+                                      device=hidden_states.device, dtype=hidden_states.dtype)
+                ham_mask = torch.triu(ham_mask)
 
             # Run encode block.
             for l_no in range(enc_i0, think_i0):
@@ -639,28 +663,58 @@ class TransformerBlock(MegatronModule):
                 # Adapter.
                 latent_states_prev = latent_states
                 latent_states = self.latent_adapter(hidden_states, latent_states)
-
-                # Forward.
                 scores_agg = None
-                if recursion_idx + self.config.n_latent_backwards < min(n_recurrences, dynamic_n_recurrences):
-                    ctx = torch.no_grad()
+
+                # Track param stuff.
+                track_param_grad = recursion_idx + self.config.n_latent_backwards >= min(n_recurrences, dynamic_n_recurrences)
+                ctx = nullcontext() if track_param_grad else torch.no_grad()
+
+                # Hamiltonian Forward.
+                if self.config.use_hamiltonian:
+                    # Get grad stuff.
+                    def backward(block, x):
+                        out = torch.sum(block(x.requires_grad_(True)))
+                        grad, = torch.autograd.grad(out, x, create_graph=track_param_grad)
+                        return grad
+
+                    # Disable parameter gradient if not needed.
+                    #for l_no in range(think_i0, dec_i0):
+                    #    self.layers[l_no].requires_grad_(track_param_grad)
+                    #self.kinetic_adapter.requires_grad_(track_param_grad)
+                    #self.potential_adapter.requires_grad_(track_param_grad)
+
+                    # One step.
+                    grad = backward(self.potential_block, latent_states)
+                    latent_states = latent_states - self.config.hamiltonian_update_rate*grad
+                    grad = backward(self.kinetic_block, hidden_states)
+                    hidden_states = hidden_states + self.config.hamiltonian_update_rate*grad
+
+                # MLP Forward.
+                elif self.config.mlp_think:
+                    with ctx:
+                        latent_states = self.mlp_think(latent_states)
+
+                # Standard Forward.
                 else:
-                    ctx = nullcontext()
-                with ctx:
-                    for l_no in range(think_i0, dec_i0):
-                        latent_states, context, maybe_scores = f(
-                            latent_states, context, self.layers[l_no],
-                            return_scores=return_scores, mask_type=mask_type,
-                        )
-                        scores_agg = self.latent_masker.aggregate_scores(scores_agg, maybe_scores)
+                    with ctx:
+                        for l_no in range(think_i0, dec_i0):
+                            latent_states, context, maybe_scores = f(
+                                latent_states, context, self.layers[l_no],
+                                return_scores=return_scores, mask_type=mask_type,
+                            )
+                            scores_agg = self.latent_masker.aggregate_scores(scores_agg, maybe_scores)
 
                 # Early exit.
                 if not math.isinf(dynamic_n_recurrences) and self.latent_timer.early_exit(latent_states, latent_states_prev):
                     dynamic_n_recurrences = recursion_idx + self.config.n_latent_backwards
 
+                # Last iteration stuff.
                 if recursion_idx + 1 == min(n_recurrences, dynamic_n_recurrences):
                     with torch.no_grad():
                         avg_diff_update = torch.mean(torch.linalg.vector_norm(latent_states - latent_states_prev, dim=-1), dim=0)
+                    if self.config.use_hamiltonian:
+                        latent_states = self.hamiltonian_adapter(hidden_states, latent_states)
+                        
                 recursion_idx += 1
 
             assert recursion_idx == min(n_recurrences, dynamic_n_recurrences)

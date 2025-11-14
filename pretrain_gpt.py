@@ -141,6 +141,7 @@ def model_provider(pre_process=True, post_process=True) -> Union[GPTModel, megat
     print_rank_0(model)
     print_rank_0("Config:")
     print_rank_0(config)
+    print_rank_0(f"Rank0 number of parameters: {1e-6*sum(map(torch.numel, model.parameters())):.3f}M")
 
     return model
 

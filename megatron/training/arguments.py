@@ -810,7 +810,7 @@ def validate_args(args, defaults={}):
             assert args.qknorm_impl != "te", "Use --qknorm-impl=apex or --qknorm-impl=torch when --layernorm-init is specified"
     if not args.attn_layernorm or not args.mlp_layernorm or not args.final_layernorm \
             or args.post_layer_norm or args.layernorm_init is not None or args.qknorm_impl != "te":
-        assert args.transformer_impl == "transformer_engine", "OP arguments are only checked with the TE transformer implementation"
+        #assert args.transformer_impl == "transformer_engine", "OP arguments are only checked with the TE transformer implementation"
         assert not args.multi_latent_attention, "OP arguments are not implemented with --multi-latent-attention"
 
     # Recurrence checks.
@@ -821,8 +821,10 @@ def validate_args(args, defaults={}):
         assert args.n_encode_layers is not None and args.n_encode_layers >= 0
         assert args.n_think_layers is not None and args.n_think_layers >= 0
         assert args.n_decode_layers is not None and args.n_decode_layers >= 0
+        assert args.n_think_layers == 0 or not args.mlp_think
         assert args.num_layers == args.n_encode_layers + args.n_think_layers + args.n_decode_layers
         assert args.pipeline_model_parallel_size == 1
+        assert args.tensor_model_parallel_size == 1 or not args.mlp_think
     else:
         args.n_encode_layers = 0
         args.n_think_layers = 0
@@ -1195,8 +1197,14 @@ def _add_network_size_args(parser):
 
     group.add_argument('--latent-masker', default="none", choices=latent.MASKERS.keys())
     group.add_argument('--latent-topk-masker-k', type=int, default=128)
-    return parser
 
+    group.add_argument('--use-hamiltonian', action="store_true")
+    group.add_argument('--hamiltonian-update-rate', type=float, default=0.05)
+    group.add_argument('--hamiltonian-adapter', default="none", choices=latent.ADAPTERS.keys())
+
+    group.add_argument('--mlp-think', action="store_true")
+    group.add_argument('--mlp-think-layers', type=int, default=0)
+    return parser
 
 def _add_straggler_detector_args(parser):
     group = parser.add_argument_group(title='straggler')

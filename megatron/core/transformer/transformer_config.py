@@ -279,6 +279,15 @@ class TransformerConfig(ModelParallelConfig):
     latent_masker: str = "none"
     latent_topk_masker_k: int = 128
 
+    use_hamiltonian: bool = False
+    hamiltonian_update_rate: float = 0.05
+    hamiltonian_adapter: str = "none"
+
+    mlp_think: bool = False
+    mlp_think_layers: int = 0
+
+
+
     ####################
     # MoE related
     ####################

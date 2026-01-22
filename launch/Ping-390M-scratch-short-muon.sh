@@ -1,4 +1,5 @@
 source .env
+export MBS=4
 bash launch/submit.sh 390 \
 	--scratch \
 	--opt muon \

@@ -263,6 +263,7 @@ def _load_checkpoint(queue, args):
     md.linear_latent_adapter_alpha=margs.linear_latent_adapter_alpha
     md.latent_masker = margs.latent_masker
     md.latent_topk_masker_k = margs.latent_topk_masker_k
+    md.latent_add_dampening_coef = margs.latent_add_dampening_coef
 
 
     # Get first pipe stage.

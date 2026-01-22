@@ -1188,6 +1188,7 @@ def _add_network_size_args(parser):
     group.add_argument('--n-decode-layers', type=int, default=None)
 
     group.add_argument('--think-adapter', default="none", choices=latent.ADAPTERS.keys())
+    group.add_argument('--latent-add-dampening-coef', type=float, default=1.0)
     group.add_argument('--latent-init', default="identity", choices=latent.INITIALIZERS.keys())
     group.add_argument('--train-recurrence-method', default="constant", choices=latent.TIMES.keys())
     group.add_argument('--n-latent-backwards', type=int, default=None)

@@ -192,6 +192,7 @@ def save_checkpoint(queue: mp.Queue, args):
             linear_latent_adapter_alpha=md.linear_latent_adapter_alpha,
             latent_masker=md.latent_masker,
             latent_topk_masker_k=md.latent_topk_masker_k,
+            latent_add_dampening_coef=md.latent_add_dampening_coef,
         )
         if args.hf_tokenizer:
             llama_conf.eos_token_id = tokenizer.eos_token_id

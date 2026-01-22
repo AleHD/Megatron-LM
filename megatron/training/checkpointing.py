@@ -1082,6 +1082,8 @@ def load_args_from_checkpoint(
     _set_arg('latent_masker', force=True)
     _set_arg('latent_topk_masker_k', force=True)
 
+    _set_arg('latent_add_dampening_coef', force=True)
+
 
     # Model parallelism args.
     if args.use_mp_args_from_checkpoint_args:

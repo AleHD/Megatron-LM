@@ -7,15 +7,22 @@ SEQ_LEN=4096
 TIME=12:00:00
 NODES=1
 
-N_RECURRENCES=1
+N_RECURRENCES=0
 LATENT_INIT=identity
 THINK_ADAPTER=none
+THINK_ADD_COEF=1.0
 TRAIN_RECURRENCE_METHOD=constant
 LINEAR_ADAPTER_ALPHA=1.0
 LATENT_MASKER=none
 LATENT_MASKER_TOPK=128
 FROM_SCRATCH=false
 OPTIMIZER=ademamix
+DECAY=0.1
+HAM_RATE=0.05
+
+HAM=false
+HAM_ADAPTER=linear
+MLP_THINK=false
 
 NEW_WEIGHTS=false
 
@@ -56,18 +63,24 @@ usage () {
 	echo "--scratch: Train from scratch."
 	# Optimizer settings.
 	echo "--opt <adam/ademamix/muon>"
+	echo "--decay <float>"
 	# Recurrence settings.
 	echo "--n-recurrences <int>: Default number of recurrences."
 	echo "--n-encode <int>: Number of encode layers."
 	echo "--n-think <int>: Number of think layers."
 	echo "--n-decode <int>: Number of decode layers."
 	echo "--latent-init <identity/truncnorm>"
-	echo "--think-adapter <none/linear>"
+	echo "--think-adapter <none/linear/add>"
+	echo "--think-add-coef"
 	echo "--train-recurrence-method <constant/poisson>"
 	echo "--n-backwards <int>"
 	echo "--linear-adapter-alpha <int>"
 	echo "--latent-masker <none/topk>"
 	echo "--latent-topk-masker-k <int>"
+	echo "--hamiltonian"
+	echo "--ham-adapter"
+	echo "--mlp-think"
+	echo "--ham-rate"
 }
 
 # Prints error message and then exit 1.
@@ -85,6 +98,7 @@ fi
 
 SIZE=$1
 shift
+SCALE=B  # M or B for parameter count.
 
 if [[ $SIZE = 390 ]]; then
 	# Arch.
@@ -101,6 +115,8 @@ if [[ $SIZE = 390 ]]; then
 	SAVE_INTERVAL=10000
 	LR=0.001
 	MIN_LR=0.0001
+	# Misc.
+	SCALE=M
 elif [[ $SIZE = 1 ]]; then
 	# Arch.
 	NUM_LAYERS=16
@@ -139,6 +155,7 @@ while [[ $# -gt 0 ]]; do
 		--scratch) FROM_SCRATCH=true; shift;;
 		# Optimizer settings.
 		--opt) OPTIMIZER=$2; shift 2;;
+		--decay) DECAY=$2; shift 2;;
 		# Recurrence settings.
 		--n-recurrences) N_RECURRENCES=$2; shift 2;;
 		--n-encode) N_ENCODE=$2; shift 2;;
@@ -146,11 +163,16 @@ while [[ $# -gt 0 ]]; do
 		--n-decode) N_DECODE=$2; shift 2;;
 		--latent-init) LATENT_INIT=$2; shift 2;;
 		--think-adapter) THINK_ADAPTER=$2; shift 2;;
+		--think-add-coef) THINK_ADD_COEF=$2; shift 2;;
 		--train-recurrence-method) TRAIN_RECURRENCE_METHOD=$2; shift 2;;
 		--n-backwards) N_BACKWARDS=$2; shift 2;;
 		--linear-adapter-alpha) LINEAR_ADAPTER_ALPHA=$2; shift 2;;
 		--latent-masker) LATENT_MASKER=$2; shift 2;;
 		--latent-topk-masker-k) LATENT_MASKER_TOPK=$2; shift 2;;
+		--hamiltonian) HAM=true; shift;;
+		--ham-adapter) HAM_ADAPTER=$2; shift 2;;
+		--mlp-think) MLP_THINK=true; shift;;
+		--ham-rate) HAM_RATE=$2; shift 2;;
 		*) die Invalid argument $1
 	esac
 done
@@ -165,7 +187,7 @@ if [[ $SIZE != 390 ]]; then
 	EXTRA_ARGS=( --untie-embeddings-and-output-weights)
 fi
 
-if [[ $N_RECURRENCES -eq 1 ]]; then
+if [[ $N_RECURRENCES -eq 0 ]]; then
 	MODEL_BASE=Apertus
 	MODEL_BASE_SUFFIX=""
 else
@@ -205,21 +227,38 @@ else
 	TRAINING_STEPS=$(($ITERS + $STEP_LOAD_IF_UNRESOLVED))
 fi
 
-if [[ $N_RECURRENCES -gt 1 ]]; then
+if [[ $N_RECURRENCES -gt 0 ]]; then
 	EXTRA_ARGS+=(
-		--log-global-metrics num_recurrences
+		--log-global-metrics num_recurrences last_latent_update_delta
 		--n-recurrences $N_RECURRENCES
 		--n-encode-layers $N_ENCODE
-		--n-think-layers $N_THINK
 		--n-decode-layers $N_DECODE
 		--latent-init $LATENT_INIT
 		--think-adapter $THINK_ADAPTER
+		--latent-add-dampening-coef $THINK_ADD_COEF
 		--train-recurrence-method $TRAIN_RECURRENCE_METHOD
 		--n-latent-backwards $N_BACKWARDS
 		--linear-latent-adapter-alpha $LINEAR_ADAPTER_ALPHA
 		--latent-masker $LATENT_MASKER
 		--latent-topk-masker-k $LATENT_MASKER_TOPK
 	)
+	if [[ $HAM = true ]]; then
+		EXTRA_ARGS+=(
+			--use-hamiltonian
+			--hamiltonian-adapter $HAM_ADAPTER
+			--hamiltonian-update-rate $HAM_RATE
+		)
+	fi
+	if [[ $HAM = true ]] || [[ $MLP_THINK = true ]]; then
+		EXTRA_ARGS+=(
+			--mlp-think
+			--mlp-think-layers $N_THINK
+			--n-think-layers 0
+		)
+		NUM_LAYERS=$(( N_ENCODE + N_DECODE ))
+	else
+		EXTRA_ARGS+=(--n-think-layers $N_THINK)
+	fi
 
 	if [[ $MODEL_BASE != ETP ]] && [[ $MODEL_BASE != Ping ]]; then  # Then we need to specify, latent init, adatper and method in the suffix.
 		if [[ $LATENT_INIT != identity ]]; then
@@ -241,8 +280,23 @@ if [[ $N_RECURRENCES -gt 1 ]]; then
 	if [[ $LINEAR_ADAPTER_ALPHA != 1.0 ]]; then
 		SUFFIX+=(la$LINEAR_ADAPTER_ALPHA)
 	fi
+	if [[ $THINK_ADD_COEF != 1.0 ]]; then
+		SUFFIX+=(lc$THINK_ADD_COEF)
+	fi
 	if [[ $N_BACKWARDS -ne $N_RECURRENCES ]]; then
 		SUFFIX+=("bck$N_BACKWARDS")
+	fi
+
+	if [[ $HAM = true ]]; then
+		SUFFIX+=(ham)
+		if [[ $HAM_RATE != 0.05 ]]; then
+			SUFFIX+=(hr$HAM_RATE)
+		fi
+		if [[ $HAM_ADAPTER != linear ]]; then
+			SHIFFX+=(HA_$HAM_ADAPTER)
+		fi
+	elif [[ $MLP_THINK = true ]]; then
+		SUFFIX+=(mlp)
 	fi
 fi
 
@@ -257,7 +311,11 @@ elif [[ $OPTIMIZER = muon ]]; then
 	BETA2=0.95
 	SUFFIX+=(muon)
 else
-	dia Unknown optimizer $OPTIMIZER
+	die Unknown optimizer $OPTIMIZER
+fi
+
+if [[ $DECAY != 0.1 ]]; then
+	SUFFIX+=(wd$DECAY)
 fi
 
 # Get important directory names.
@@ -272,7 +330,7 @@ MEGATRON_LM_DIR=/capstor/store/cscs/swissai/infra01/users/ahernnde/workspace/lat
 PROJECT_DIR=/capstor/store/cscs/swissai/infra01/users/ahernnde/workspace/latency/logs/$SCRIPT_VERSION
 DATASET_CACHE_DIR=$SCRATCH/datasets/cache
 PROJECT_NAME=latency-$SCRIPT_VERSION
-EXP_NAME=$MODEL_BASE-${SIZE}B$MODEL_BASE_SUFFIX$SUFFIX
+EXP_NAME=$MODEL_BASE-$SIZE$SCALE$MODEL_BASE_SUFFIX$SUFFIX
 
 EXP_DIR=$PROJECT_DIR/$EXP_NAME
 DEBUG_ROOT=$EXP_DIR/debug
@@ -305,10 +363,10 @@ else
 fi
 
 # Determine partition.
-IFS=: read -r T_H T_M T_S <<< "$time"
+IFS=: read -r T_H T_M T_S <<< "$TIME"
 TIME_MINS=$((10#$T_H * 60 + 10#$T_M + (10#$T_S + 59) / 60))
 if [[ $DEBUG = true ]] && ((TIME_MINS*NODES < 90)) && [[ $NODES -le 4 ]]; then
-	PARTITION=normal
+	PARTITION=debug
 else
 	PARTITION=normal
 	MAYBE_SIGNAL="#SBATCH --signal=SIGUSR2@600"
@@ -360,7 +418,7 @@ LOGGING_ARGS=(
 REGULARIZATION_ARGS=(
 	--attention-dropout 0.0
 	--hidden-dropout 0.0
-	--weight-decay 0.1
+	--weight-decay $DECAY
 	--clip-grad 0.1
 	--adam-beta1 0.9
 	--adam-beta2 $BETA2

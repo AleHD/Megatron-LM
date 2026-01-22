@@ -269,6 +269,7 @@ class TransformerConfig(ModelParallelConfig):
     n_decode_layers: int = None
 
     think_adapter: str = "none"
+    latent_add_dampening_coef: float = 1.0
     latent_init: str = "identity"
     train_recurrence_method: str = "constant"
     n_latent_backwards: int = None

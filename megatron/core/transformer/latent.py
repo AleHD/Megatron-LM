@@ -40,6 +40,11 @@ class LinearLatentAdapter(LatentAdapter):
             weight[:, self.config.hidden_size:] = alpha*weight[:, self.config.hidden_size:] + (1-alpha)*0.0
 
 
+class AddDampAdapter(LatentAdapter):
+    def forward(self, hidden_states, latent_states, **kw):
+        return hidden_states + self.config.latent_add_dampening_coef*latent_states
+
+
 
 
 #= Initializers =#
@@ -146,6 +151,7 @@ class TopkSeqLatentMasker(LatentMasker):
 ADAPTERS = {
     "none": NullLatentAdapter,
     "linear": LinearLatentAdapter,
+    "add": AddDampAdapter,
 }
 
 INITIALIZERS = {
